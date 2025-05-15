@@ -5,8 +5,9 @@
 % 3. Retrieves epoch durations for each mouse from CSV files
 % 4. Sorts sleep bouts into light phase (6:00-18:00) and dark phase (18:00-6:00)
 % 5. Bins the epochs by their duration (0s, 4s, 8s, 16s, 32s, 64s, 128s, 256s, 512s)
-% 6. Computes averages and standard deviations by genotype (overall, light phase, dark phase)
-% 7. Plots results as line, bar, and dot graphs with error bars for all data categories
+% 6. Performs ZT (Zeitgeber Time) hour analysis, where ZT0 = 6:00, ZT12 = 18:00
+% 7. Computes averages and standard deviations by genotype (overall, light phase, dark phase, ZT hour)
+% 8. Plots results as line, bar, and dot graphs with error bars for all data categories
 
 %% Parameters and Setup
 mainFolder = '/Users/davidrivas/Documents/research/sleep-box/09-18-23'; % Use current directory, or specify your path
@@ -563,5 +564,470 @@ for c = 1:length(categories)
     saveas(gcf, fullfile(outputFolder, [strrep(categoryLabel, ' ', '_') '_Bouts_Dot.png']));
 end
 
+fprintf('All figures saved to %s\n', outputFolder);
+fprintf('Analysis complete!\n');
+
+%% ZT hour analysis 
+fprintf('\n==========================================\n');
+fprintf('Beginning Zeitgeber Time (ZT) Analysis\n');
+fprintf('==========================================\n');
+
+% Define ZT hours (ZT0 = 6:00, ZT12 = 18:00)
+numZTHours = 24;
+ztLabels = cell(numZTHours, 1);
+for i = 1:numZTHours
+    ztLabels{i} = sprintf('ZT%d', i-1);
+end
+
+% Create structures to store data by ZT hour for each genotype and mouse
+ztData = struct();
+ztData.wild_type = struct('counts', zeros(0, numZTHours), 'totalDurations', zeros(0, numZTHours), 'avgDurations', zeros(0, numZTHours));
+ztData.mutant = struct('counts', zeros(0, numZTHours), 'totalDurations', zeros(0, numZTHours), 'avgDurations', zeros(0, numZTHours));
+
+% Process each CSV file for ZT hour analysis
+fprintf('Processing files for ZT hour analysis...\n');
+
+for i = 1:length(csvFiles)
+    csvPath = fullfile(csvFiles(i).folder, csvFiles(i).name);
+    currentMouseID = mouseIDs{i};
+    
+    % Determine genotype based on user input
+    if ismember(currentMouseID, wtMice)
+        mouseGenotype = 'wild_type';
+    elseif ismember(currentMouseID, mutMice)
+        mouseGenotype = 'mutant';
+    else
+        % Skip mice not assigned to any genotype
+        continue;
+    end
+    
+    fprintf('Processing ZT data for mouse %s (genotype: %s)...\n', currentMouseID, strrep(mouseGenotype, '_', '-'));
+    
+    try
+        % Read the CSV file with all necessary columns
+        opts = detectImportOptions(csvPath);
+        
+        % Debug: Print column names to verify what's in the file
+        fprintf('  CSV columns: %s\n', strjoin(opts.VariableNames, ', '));
+        
+        % Make sure we have at least 3 columns
+        if size(opts.VariableNames, 2) >= 3
+            % Select timestamp (first column) and sleep bout duration (third column)
+            opts.SelectedVariableNames = opts.VariableNames([1, 3]);
+            
+            % Set variable types appropriately
+            opts = setvartype(opts, opts.SelectedVariableNames{1}, 'string'); % timestamp as string
+            opts = setvartype(opts, opts.SelectedVariableNames{2}, 'double'); % duration as double
+            
+            % Read the data
+            sleepData = readtable(csvPath, opts);
+            
+            if ~isempty(sleepData)
+                % Extract sleep bout durations
+                sleepDurations = sleepData.(opts.SelectedVariableNames{2});
+                % Remove NaN values
+                validIdx = ~isnan(sleepDurations);
+                sleepDurations = sleepDurations(validIdx);
+                
+                % Extract timestamps for valid durations
+                timestamps = sleepData.(opts.SelectedVariableNames{1})(validIdx);
+                
+                fprintf('  Found %d valid sleep bouts with timestamps\n', length(sleepDurations));
+                % Debug output for the first few timestamps
+                if ~isempty(timestamps)
+                    fprintf('  First few timestamps: ');
+                    for t = 1:min(3, length(timestamps))
+                        fprintf('%s, ', string(timestamps(t)));
+                    end
+                    fprintf('\n');
+                end
+                
+                % Group data by ZT hour
+                ztCounts = zeros(1, numZTHours);
+                ztTotalDurations = zeros(1, numZTHours);
+                
+                % Process each timestamp and assign to ZT hour
+                processedTimestamps = 0;
+                failedTimestamps = 0;
+                
+                for t = 1:length(timestamps)
+                    try
+                        % Parse timestamp format (e.g., "9/19/23 6:01")
+                        timestamp = timestamps(t);
+                        
+                        % Extract hour
+                        timeParts = split(timestamp, ' ');
+                        if length(timeParts) >= 2
+                            timeStr = timeParts{2};
+                            hourParts = split(timeStr, ':');
+                            hour = str2double(hourParts{1});
+                            
+                            % Convert hour to ZT hour (ZT0 = 6:00, ZT12 = 18:00)
+                            ztHour = mod(hour - 6, 24) + 1; % +1 for MATLAB 1-based indexing
+                            
+                            % Increment count and add duration for this ZT hour
+                            ztCounts(ztHour) = ztCounts(ztHour) + 1;
+                            ztTotalDurations(ztHour) = ztTotalDurations(ztHour) + sleepDurations(t);
+                            processedTimestamps = processedTimestamps + 1;
+                        else
+                            fprintf('    Warning: Unable to parse timestamp: %s\n', timestamp);
+                            failedTimestamps = failedTimestamps + 1;
+                        end
+                    catch e
+                        fprintf('    Warning: Error processing timestamp %s for ZT analysis: %s\n', timestamp, e.message);
+                        failedTimestamps = failedTimestamps + 1;
+                    end
+                end
+                
+                fprintf('  Successfully processed %d of %d timestamps (%d failed)\n', processedTimestamps, length(timestamps), failedTimestamps);
+                
+                % Calculate average bout duration for each ZT hour
+                ztAvgDurations = zeros(1, numZTHours);
+                for h = 1:numZTHours
+                    if ztCounts(h) > 0
+                        ztAvgDurations(h) = ztTotalDurations(h) / ztCounts(h);
+                    else
+                        ztAvgDurations(h) = 0;
+                    end
+                end
+                
+                % Store the ZT data for this mouse
+                prevSize = size(ztData.(mouseGenotype).counts, 1);
+                ztData.(mouseGenotype).counts(prevSize+1,:) = ztCounts;
+                ztData.(mouseGenotype).totalDurations(prevSize+1,:) = ztTotalDurations;
+                ztData.(mouseGenotype).avgDurations(prevSize+1,:) = ztAvgDurations;
+                
+                fprintf('  Added ZT data for mouse %s\n', currentMouseID);
+                fprintf('  ZT summary for mouse %s:\n', currentMouseID);
+                fprintf('    Total sleep bouts: %d\n', sum(ztCounts));
+                fprintf('    Total sleep duration: %.1f seconds\n', sum(ztTotalDurations));
+            else
+                fprintf('  Warning: No sleep bout data found in file for mouse %s\n', currentMouseID);
+            end
+        else
+            fprintf('  Warning: CSV file for mouse %s does not have at least 3 columns\n', currentMouseID);
+        end
+    catch e
+        fprintf('  Error processing ZT data for mouse %s: %s\n', currentMouseID, e.message);
+    end
+end
+
+%% Calculate ZT statistics by genotype
+% Initialize structures for mean and std values
+ztMean = struct();
+ztStd = struct();
+ztSem = struct(); % Standard error of the mean
+
+for genotype = {'wild_type', 'mutant'}
+    gen = genotype{1};
+    if isfield(ztData, gen)
+        % Calculate statistics for bout counts
+        if ~isempty(ztData.(gen).counts)
+            ztMean.(gen).counts = mean(ztData.(gen).counts, 1);
+            ztStd.(gen).counts = std(ztData.(gen).counts, 0, 1);
+            ztSem.(gen).counts = ztStd.(gen).counts / sqrt(size(ztData.(gen).counts, 1));
+        else
+            fprintf('No ZT bout count data found for genotype: %s\n', gen);
+            ztMean.(gen).counts = zeros(1, numZTHours);
+            ztStd.(gen).counts = zeros(1, numZTHours);
+            ztSem.(gen).counts = zeros(1, numZTHours);
+        end
+        
+        % Calculate statistics for total durations
+        if ~isempty(ztData.(gen).totalDurations)
+            ztMean.(gen).totalDurations = mean(ztData.(gen).totalDurations, 1);
+            ztStd.(gen).totalDurations = std(ztData.(gen).totalDurations, 0, 1);
+            ztSem.(gen).totalDurations = ztStd.(gen).totalDurations / sqrt(size(ztData.(gen).totalDurations, 1));
+        else
+            fprintf('No ZT total duration data found for genotype: %s\n', gen);
+            ztMean.(gen).totalDurations = zeros(1, numZTHours);
+            ztStd.(gen).totalDurations = zeros(1, numZTHours);
+            ztSem.(gen).totalDurations = zeros(1, numZTHours);
+        end
+        
+        % Calculate statistics for average durations
+        if ~isempty(ztData.(gen).avgDurations)
+            ztMean.(gen).avgDurations = mean(ztData.(gen).avgDurations, 1);
+            ztStd.(gen).avgDurations = std(ztData.(gen).avgDurations, 0, 1);
+            ztSem.(gen).avgDurations = ztStd.(gen).avgDurations / sqrt(size(ztData.(gen).avgDurations, 1));
+        else
+            fprintf('No ZT average duration data found for genotype: %s\n', gen);
+            ztMean.(gen).avgDurations = zeros(1, numZTHours);
+            ztStd.(gen).avgDurations = zeros(1, numZTHours);
+            ztSem.(gen).avgDurations = zeros(1, numZTHours);
+        end
+    end
+end
+
+%% Add ZT data to Excel export
+fprintf('Adding ZT data to Excel export...\n');
+
+% Create tables for ZT hour data
+ztCountsTable = array2table(zeros(numZTHours, 0));
+ztCountsTable.ZT_Hour = ztLabels;
+
+ztTotalDurationsTable = array2table(zeros(numZTHours, 0));
+ztTotalDurationsTable.ZT_Hour = ztLabels;
+
+ztAvgDurationsTable = array2table(zeros(numZTHours, 0));
+ztAvgDurationsTable.ZT_Hour = ztLabels;
+
+% Add individual mouse data to tables
+for genotype = {'wild_type', 'mutant'}
+    gen = genotype{1};
+    
+    if isfield(animalIDs, gen) && ~isempty(animalIDs.(gen))
+        for m = 1:min(length(animalIDs.(gen)), size(ztData.(gen).counts, 1))
+            mouseID = animalIDs.(gen){m};
+            
+            % Add counts data
+            ztCountsTable.([mouseID '_Counts']) = ztData.(gen).counts(m,:)';
+            
+            % Add total durations data
+            ztTotalDurationsTable.([mouseID '_Total']) = ztData.(gen).totalDurations(m,:)';
+            
+            % Add average durations data
+            ztAvgDurationsTable.([mouseID '_Avg']) = ztData.(gen).avgDurations(m,:)';
+        end
+    end
+end
+
+% Add genotype statistics to tables
+for genotype = {'wild_type', 'mutant'}
+    gen = genotype{1};
+    display_name = strrep(gen, '_', '-'); % Convert 'wild_type' to 'wild-type'
+    
+    if isfield(ztMean, gen)
+        % Add bout counts statistics
+        ztCountsTable.([display_name '_Mean']) = ztMean.(gen).counts';
+        ztCountsTable.([display_name '_SD']) = ztStd.(gen).counts';
+        ztCountsTable.([display_name '_SEM']) = ztSem.(gen).counts';
+        
+        % Add total durations statistics
+        ztTotalDurationsTable.([display_name '_Mean']) = ztMean.(gen).totalDurations';
+        ztTotalDurationsTable.([display_name '_SD']) = ztStd.(gen).totalDurations';
+        ztTotalDurationsTable.([display_name '_SEM']) = ztSem.(gen).totalDurations';
+        
+        % Add average durations statistics
+        ztAvgDurationsTable.([display_name '_Mean']) = ztMean.(gen).avgDurations';
+        ztAvgDurationsTable.([display_name '_SD']) = ztStd.(gen).avgDurations';
+        ztAvgDurationsTable.([display_name '_SEM']) = ztSem.(gen).avgDurations';
+    end
+end
+
+% Write ZT tables to Excel file
+writetable(ztCountsTable, xlsFilePath, 'Sheet', 'ZT_Bout_Counts');
+writetable(ztTotalDurationsTable, xlsFilePath, 'Sheet', 'ZT_Total_Durations');
+writetable(ztAvgDurationsTable, xlsFilePath, 'Sheet', 'ZT_Avg_Durations');
+
+fprintf('ZT data added to Excel file successfully.\n');
+
+%% Create ZT hour plots
+fprintf('Generating ZT hour plots...\n');
+
+% Define plot types
+ztPlotTypes = {'counts', 'totalDurations', 'avgDurations'};
+ztPlotLabels = {'Sleep Bout Counts', 'Total Sleep Duration', 'Average Bout Duration'};
+ztYLabels = {'Number of Bouts', 'Total Duration (seconds)', 'Average Duration (seconds)'};
+
+% Create plots for each ZT data type
+for p = 1:length(ztPlotTypes)
+    plotType = ztPlotTypes{p};
+    plotLabel = ztPlotLabels{p};
+    yLabel = ztYLabels{p};
+    
+    %% 1. Line Plot
+    figure('Name', ['ZT ' plotLabel ' - Line Plot'], 'Position', [100, 100, 800, 500]);
+    hold on;
+    
+    % Add light/dark background shading
+    % Light phase: ZT0-ZT12 (6:00-18:00)
+    % Dark phase: ZT12-ZT24 (18:00-6:00)
+    lightPhaseColor = [0.9, 0.9, 0.8];
+    darkPhaseColor = [0.8, 0.8, 0.9];
+    
+    % Draw background rectangles for light/dark phases
+    ylim auto; % Set y limits automatically first
+    yl = ylim; % Get the automatic y limits
+    
+    % Draw the background rectangles
+    rectangle('Position', [0, yl(1), 12, yl(2)-yl(1)], ...
+        'FaceColor', lightPhaseColor, 'EdgeColor', 'none');
+    rectangle('Position', [12, yl(1), 12, yl(2)-yl(1)], ...
+        'FaceColor', darkPhaseColor, 'EdgeColor', 'none');
+    
+    % Plot wild-type data with error bars
+    if isfield(ztMean, 'wild_type') && all(isfinite(ztMean.wild_type.(plotType)))
+        errorbar(0:23, ztMean.wild_type.(plotType), ztSem.wild_type.(plotType), ...
+            'Color', wtColor, 'LineWidth', 2, 'Marker', 'o', 'MarkerFaceColor', wtColor, 'MarkerSize', 8);
+    end
+    
+    % Plot mutant data with error bars
+    if isfield(ztMean, 'mutant') && all(isfinite(ztMean.mutant.(plotType)))
+        errorbar(0:23, ztMean.mutant.(plotType), ztSem.mutant.(plotType), ...
+            'Color', mutColor, 'LineWidth', 2, 'Marker', 'o', 'MarkerFaceColor', mutColor, 'MarkerSize', 8);
+    end
+    
+    % Bring the plot lines to front
+    uistack(findobj(gca, 'Type', 'line'), 'top');
+    
+    % Add labels and legend
+    title(['ZT Hour ' plotLabel]);
+    xlabel('ZT Hour (ZT0 = 6:00, ZT12 = 18:00)');
+    ylabel(yLabel);
+    set(gca, 'XTick', 0:2:23);
+    xlim([-0.5, 23.5]);
+    legend('Wild-type (Mean ± SEM)', 'Mutant (Mean ± SEM)', 'Location', 'best');
+    grid on;
+    hold off;
+    
+    % Save the figure
+    saveas(gcf, fullfile(outputFolder, ['ZT_' strrep(plotLabel, ' ', '_') '_Line.fig']));
+    saveas(gcf, fullfile(outputFolder, ['ZT_' strrep(plotLabel, ' ', '_') '_Line.png']));
+    
+    %% 2. Bar Plot
+    figure('Name', ['ZT ' plotLabel ' - Bar Plot'], 'Position', [100, 100, 800, 500]);
+    hold on;
+    
+    % Bar width and positions
+    barWidth = 0.35;
+    wtPos = (0:23) - barWidth/2;
+    mutPos = (0:23) + barWidth/2;
+    
+    % Add light/dark background shading
+    lightPhaseColor = [0.9, 0.9, 0.8];
+    darkPhaseColor = [0.8, 0.8, 0.9];
+    
+    % Set axis limits first so background covers correctly
+    xlim([-0.5, 23.5]);
+    ylim auto;
+    yl = ylim;
+    
+    % Draw background rectangles for light/dark phases
+    rectangle('Position', [0, yl(1), 12, yl(2)-yl(1)], ...
+        'FaceColor', lightPhaseColor, 'EdgeColor', 'none');
+    rectangle('Position', [12, yl(1), 12, yl(2)-yl(1)], ...
+        'FaceColor', darkPhaseColor, 'EdgeColor', 'none');
+    
+    % Clear barHandles for this new figure
+    clear barHandles;
+    
+    % Plot wild-type bars
+    if isfield(ztMean, 'wild_type') && all(isfinite(ztMean.wild_type.(plotType)))
+        barHandles(1) = bar(wtPos, ztMean.wild_type.(plotType), barWidth, 'FaceColor', wtColor);
+        
+        % Add error bars
+        errorbar(wtPos, ztMean.wild_type.(plotType), ztStd.wild_type.(plotType), '.k');
+    end
+    
+    % Plot mutant bars
+    if isfield(ztMean, 'mutant') && all(isfinite(ztMean.mutant.(plotType)))
+        barHandles(2) = bar(mutPos, ztMean.mutant.(plotType), barWidth, 'FaceColor', mutColor);
+        
+        % Add error bars
+        errorbar(mutPos, ztMean.mutant.(plotType), ztStd.mutant.(plotType), '.k');
+    end
+    
+    % Bring the bars to front
+    if exist('barHandles', 'var')
+        for i = 1:length(barHandles)
+            uistack(barHandles(i), 'top');
+        end
+    end
+    
+    % Add labels and legend
+    title(['ZT Hour ' plotLabel]);
+    xlabel('ZT Hour (ZT0 = 6:00, ZT12 = 18:00)');
+    ylabel(yLabel);
+    set(gca, 'XTick', 0:2:23);
+    
+    % Add legend if both genotypes have data
+    if exist('barHandles', 'var') && length(barHandles) >= 2
+        legend(barHandles, {'Wild-type (Mean ± SD)', 'Mutant (Mean ± SD)'}, 'Location', 'best');
+    end
+    
+    grid on;
+    hold off;
+    
+    % Save the figure
+    saveas(gcf, fullfile(outputFolder, ['ZT_' strrep(plotLabel, ' ', '_') '_Bar.fig']));
+    saveas(gcf, fullfile(outputFolder, ['ZT_' strrep(plotLabel, ' ', '_') '_Bar.png']));
+    
+    %% 3. Dot Plot (Individual mice with mean)
+    figure('Name', ['ZT ' plotLabel ' - Dot Plot'], 'Position', [100, 100, 800, 500]);
+    hold on;
+    
+    % Add light/dark background shading
+    lightPhaseColor = [0.9, 0.9, 0.8];
+    darkPhaseColor = [0.8, 0.8, 0.9];
+    
+    % Set axis limits first so background covers correctly
+    xlim([-0.5, 23.5]);
+    ylim auto;
+    yl = ylim;
+    
+    % Draw background rectangles for light/dark phases
+    rectangle('Position', [0, yl(1), 12, yl(2)-yl(1)], ...
+        'FaceColor', lightPhaseColor, 'EdgeColor', 'none');
+    rectangle('Position', [12, yl(1), 12, yl(2)-yl(1)], ...
+        'FaceColor', darkPhaseColor, 'EdgeColor', 'none');
+    
+    % Initialize handles for legend
+    plotHandles = [];
+    legendTexts = {};
+    
+    % Plot individual data points for wild-type
+    if isfield(ztData, 'wild_type') && ~isempty(ztData.wild_type.(plotType))
+        for i = 1:size(ztData.wild_type.(plotType), 1)
+            scatter(0:23, ztData.wild_type.(plotType)(i,:), 50, wtColor, 'o', 'filled', 'MarkerFaceAlpha', 0.3);
+        end
+        
+        % Plot mean with error bars and capture handle
+        h_wt = errorbar(0:23, ztMean.wild_type.(plotType), ztSem.wild_type.(plotType), ...
+            'Color', wtColor, 'LineWidth', 2, 'Marker', 'o', 'MarkerFaceColor', wtColor, 'MarkerSize', 10);
+        
+        % Add to legend arrays
+        plotHandles = [plotHandles, h_wt];
+        legendTexts{end+1} = 'Wild-type (Mean ± SEM)';
+    end
+    
+    % Plot individual data points for mutant
+    if isfield(ztData, 'mutant') && ~isempty(ztData.mutant.(plotType))
+        for i = 1:size(ztData.mutant.(plotType), 1)
+            scatter((0:23)+0.2, ztData.mutant.(plotType)(i,:), 50, mutColor, 'o', 'filled', 'MarkerFaceAlpha', 0.3);
+        end
+        
+        % Plot mean with error bars and capture handle
+        h_mut = errorbar((0:23)+0.2, ztMean.mutant.(plotType), ztSem.mutant.(plotType), ...
+            'Color', mutColor, 'LineWidth', 2, 'Marker', 'o', 'MarkerFaceColor', mutColor, 'MarkerSize', 10);
+        
+        % Add to legend arrays
+        plotHandles = [plotHandles, h_mut];
+        legendTexts{end+1} = 'Mutant (Mean ± SEM)';
+    end
+    
+    % Bring the lines to front
+    uistack(findobj(gca, 'Type', 'line'), 'top');
+    
+    % Add labels and legend
+    title(['ZT Hour ' plotLabel]);
+    xlabel('ZT Hour (ZT0 = 6:00, ZT12 = 18:00)');
+    ylabel(yLabel);
+    set(gca, 'XTick', 0:2:23);
+    
+    % Create legend with handles
+    if ~isempty(plotHandles)
+        legend(plotHandles, legendTexts, 'Location', 'best');
+    end
+    
+    grid on;
+    hold off;
+    
+    % Save the figure
+    saveas(gcf, fullfile(outputFolder, ['ZT_' strrep(plotLabel, ' ', '_') '_Dot.fig']));
+    saveas(gcf, fullfile(outputFolder, ['ZT_' strrep(plotLabel, ' ', '_') '_Dot.png']));
+end
+
+fprintf('ZT hour analysis complete!\n');
 fprintf('All figures saved to %s\n', outputFolder);
 fprintf('Analysis complete!\n');
