@@ -7,7 +7,7 @@
 % 6. Performs ZT (Zeitgeber Time) hour analysis, where ZT0 = 6:00, ZT12 = 18:00
 % 7. SEPARATES DATA BY EXPERIMENTAL DAY (Day 1, Day 2, etc.) - days run from 6AM to 6AM
 % 8. Computes averages and standard deviations by genotype (overall, light phase, dark phase, ZT hour, per day)
-% 9. Plots results as line, bar, and dot graphs with error bars for all data categories
+% 9. Plots results as dot graphs with error bars for all data categories
 
 %% Helper function to create valid MATLAB field names
 function validName = makeValidFieldName(inputName)
@@ -1453,7 +1453,7 @@ fprintf('ZT hour analysis complete!\n');
 fprintf('Creating ZT bout counts across experimental days plots...\n');
 
 % Define colors for each day
-dayColors = colormap(hsv(numDays)); % Generates distinct colors for each day
+dayColors = colormap(lines(numDays)); % Generates distinct colors for each day
 
 % 1. ZT bout counts across days by genotype
 for genotype = {'wild_type', 'mutant'}
