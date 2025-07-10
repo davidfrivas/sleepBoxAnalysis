@@ -22,7 +22,7 @@ function validName = makeValidFieldName(inputName)
 end
 
 %% Parameters and Setup
-mainFolder = '/Users/davidrivas/Documents/research/sleep-box/09-18-23'; % Use current directory, or specify your path
+mainFolder = '/Users/davidrivas/Documents/research/sleep-box/Chd8Het_Old_July2023/091823'; % Use current directory, or specify your path
 genotypes = {'wild-type', 'mutant'}; % Define genotypes 
 
 % Define bin edges for epoch durations (in seconds)
@@ -1647,13 +1647,7 @@ fprintf('ZT hour analysis complete!\n');
 fprintf('Creating ZT bout counts across experimental days plots...\n');
 
 % Define colors for each day
-dayColors = [
-    0.2, 0.4, 0.8;  % Day 1 - Blue
-    0.8, 0.2, 0.2;  % Day 2 - Red  
-    0.2, 0.8, 0.2;  % Day 3 - Green
-    0.8, 0.4, 0.2;  % Day 4 - Orange
-    0.6, 0.2, 0.8;  % Day 5 - Purple
-];
+dayColors = colormap(hsv(numDays)); % Generates distinct colors for each day
 
 % 1. ZT bout counts across days by genotype
 for genotype = {'wild_type', 'mutant'}
@@ -1880,15 +1874,6 @@ fprintf('ZT across days analysis complete!\n');
 
 %% Create ZT plots across experimental days
 fprintf('Creating ZT bout counts across experimental days plots...\n');
-
-% Define colors for each day
-dayColors = [
-    0.2, 0.4, 0.8;  % Day 1 - Blue
-    0.8, 0.2, 0.2;  % Day 2 - Red  
-    0.2, 0.8, 0.2;  % Day 3 - Green
-    0.8, 0.4, 0.2;  % Day 4 - Orange
-    0.6, 0.2, 0.8;  % Day 5 - Purple
-];
 
 % 1. ZT bout counts across days by genotype
 for genotype = {'wild_type', 'mutant'}
