@@ -1,6 +1,6 @@
 % This script:
 % 1. Finds all CSV files in input folder (no subfolders)
-% 2. Groups mice by genotype (wild-type or mutant)
+% 2. Groups mice by user-defined genotypes (can be more than 2)
 % 3. Retrieves epoch durations for each mouse from CSV files
 % 4. Sorts sleep bouts into light phase (6:00-18:00) and dark phase (18:00-6:00)
 % 5. Bins the epochs by their duration (2s, 4s, 8s, 16s, 32s, 64s, 128s, 256s, 512s)
@@ -23,7 +23,6 @@ end
 
 %% Parameters and Setup
 mainFolder = '/Users/davidrivas/Documents/research/sleep-box/Chd8Het_Old_July2023/091823'; % Use current directory, or specify your path
-genotypes = {'wild-type', 'mutant'}; % Define genotypes 
 
 % Define bin edges for epoch durations (in seconds)
 binEdges = [2, 4, 8, 16, 32, 64, 128, 256, 512, inf];
@@ -38,22 +37,6 @@ if ~exist(outputFolder, 'dir')
 else
     fprintf('Using existing output folder: %s\n', outputFolder);
 end
-
-% Create structures to store binned epoch counts by genotype
-epochCounts = struct();
-epochCounts.wild_type = struct('sleep', zeros(0, numBins), 'light', zeros(0, numBins), 'dark', zeros(0, numBins));
-epochCounts.mutant = struct('sleep', zeros(0, numBins), 'light', zeros(0, numBins), 'dark', zeros(0, numBins));
-
-% Create structure to store animal IDs by genotype
-animalIDs = struct();
-animalIDs.wild_type = {};
-animalIDs.mutant = {};
-
-%% Initialize per-day data structures
-% These will store data separated by experimental day
-dayData = struct();
-dayData.wild_type = struct();
-dayData.mutant = struct();
 
 % Keep track of all days found across all mice
 allDays = [];
@@ -89,27 +72,78 @@ for i = 1:length(mouseIDs)
 end
 fprintf('\n');
 
-% Prompt user to identify wild-type mice
-fprintf('Please enter the IDs of wild-type mice, separated by commas:\n');
-wtInput = input('Wild-type mice: ', 's');
+%% Prompt user to define genotypes
+fprintf('Please enter the names of genotypes you want to analyze, separated by commas:\n');
+fprintf('(Examples: wild-type, mutant OR control, treatment1, treatment2)\n');
+genotypeInput = input('Genotypes: ', 's');
+
 % Process the input - split by commas and trim whitespace
-wtMice = strtrim(split(wtInput, ','));
-for i = 1:length(wtMice)
-    wtMice{i} = strtrim(wtMice{i});
+genotypeNames = strtrim(split(genotypeInput, ','));
+for i = 1:length(genotypeNames)
+    genotypeNames{i} = strtrim(genotypeNames{i});
 end
 
-% Prompt user to identify mutant mice
-fprintf('Please enter the IDs of mutant mice, separated by commas:\n');
-mutInput = input('Mutant mice: ', 's');
-% Process the input - split by commas and trim whitespace
-mutMice = strtrim(split(mutInput, ','));
-for i = 1:length(mutMice)
-    mutMice{i} = strtrim(mutMice{i});
+% Remove any empty entries
+genotypeNames = genotypeNames(~cellfun('isempty', genotypeNames));
+
+if isempty(genotypeNames)
+    error('No genotypes specified. Please restart the script and provide at least one genotype.');
+end
+
+numGenotypes = length(genotypeNames);
+fprintf('\nYou have defined %d genotypes: %s\n\n', numGenotypes, strjoin(genotypeNames, ', '));
+
+% Create field names for genotypes (for MATLAB struct compatibility)
+genotypeFieldNames = cell(numGenotypes, 1);
+for i = 1:numGenotypes
+    genotypeFieldNames{i} = makeValidFieldName(genotypeNames{i});
+end
+
+%% Initialize data structures dynamically based on genotypes
+% Create structures to store binned epoch counts by genotype
+epochCounts = struct();
+totalCounts = struct();
+animalIDs = struct();
+dayData = struct();
+dayStats = struct();
+
+for i = 1:numGenotypes
+    genField = genotypeFieldNames{i};
+    epochCounts.(genField) = struct('sleep', zeros(0, numBins), 'light', zeros(0, numBins), 'dark', zeros(0, numBins));
+    totalCounts.(genField) = struct('sleep', [], 'light', [], 'dark', []);
+    animalIDs.(genField) = {};
+    dayData.(genField) = struct();
+    dayStats.(genField) = struct();
+end
+
+%% Collect mouse assignments for each genotype
+genotypeAssignments = struct();
+allAssignedMice = {};
+
+for i = 1:numGenotypes
+    genotypeName = genotypeNames{i};
+    genField = genotypeFieldNames{i};
+    
+    fprintf('Please enter the IDs of %s mice, separated by commas:\n', genotypeName);
+    miceInput = input(sprintf('%s mice: ', genotypeName), 's');
+    
+    % Process the input
+    miceList = strtrim(split(miceInput, ','));
+    for j = 1:length(miceList)
+        miceList{j} = strtrim(miceList{j});
+    end
+    
+    % Remove empty entries
+    miceList = miceList(~cellfun('isempty', miceList));
+    
+    genotypeAssignments.(genField) = miceList;
+    allAssignedMice = [allAssignedMice; miceList];
+    
+    fprintf('  %s: %s\n', genotypeName, strjoin(miceList, ', '));
 end
 
 % Verify inputs and warn about any unlisted mice
-allListedMice = [wtMice; mutMice];
-unlistedMice = setdiff(mouseIDs, allListedMice);
+unlistedMice = setdiff(mouseIDs, allAssignedMice);
 if ~isempty(unlistedMice)
     fprintf('\nWarning: The following mice were not assigned to any genotype and will be skipped:\n');
     for i = 1:length(unlistedMice)
@@ -118,43 +152,53 @@ if ~isempty(unlistedMice)
     fprintf('\n');
 end
 
-% Make sure there's no overlap between wild-type and mutant mice
-commonMice = intersect(wtMice, mutMice);
-if ~isempty(commonMice)
-    fprintf('\nERROR: The following mice were assigned to both genotypes:\n');
-    for i = 1:length(commonMice)
-        fprintf('  %s\n', commonMice{i});
+% Check for overlapping assignments
+for i = 1:numGenotypes-1
+    for j = i+1:numGenotypes
+        genField1 = genotypeFieldNames{i};
+        genField2 = genotypeFieldNames{j};
+        overlap = intersect(genotypeAssignments.(genField1), genotypeAssignments.(genField2));
+        if ~isempty(overlap)
+            fprintf('\nERROR: The following mice were assigned to multiple genotypes (%s and %s):\n', ...
+                genotypeNames{i}, genotypeNames{j});
+            for k = 1:length(overlap)
+                fprintf('  %s\n', overlap{k});
+            end
+            error('Mice cannot be assigned to multiple genotypes. Please restart the script.');
+        end
     end
-    error('Mice cannot be assigned to both genotypes. Please restart the script and provide non-overlapping lists.');
 end
 
-fprintf('Processing will begin with:\n');
-fprintf('  Wild-type mice: %s\n', strjoin(wtMice, ', '));
-fprintf('  Mutant mice: %s\n\n', strjoin(mutMice, ', '));
+fprintf('\nProcessing will begin with:\n');
+for i = 1:numGenotypes
+    genField = genotypeFieldNames{i};
+    fprintf('  %s: %s\n', genotypeNames{i}, strjoin(genotypeAssignments.(genField), ', '));
+end
+fprintf('\n');
 
 %% Process each CSV file
-% Create a structure to store total epoch counts per mouse
-totalCounts = struct();
-totalCounts.wild_type = struct('sleep', [], 'light', [], 'dark', []);
-totalCounts.mutant = struct('sleep', [], 'light', [], 'dark', []);
-
-% Match files to mice and process them
 for i = 1:length(csvFiles)
     csvPath = fullfile(csvFiles(i).folder, csvFiles(i).name);
     currentMouseID = mouseIDs{i};
     
     % Determine genotype based on user input
-    if ismember(currentMouseID, wtMice)
-        mouseGenotype = 'wild_type';
-    elseif ismember(currentMouseID, mutMice)
-        mouseGenotype = 'mutant';
-    else
-        % Skip mice not assigned to any genotype
+    mouseGenotype = '';
+    genotypeDisplayName = '';
+    for j = 1:numGenotypes
+        genField = genotypeFieldNames{j};
+        if ismember(currentMouseID, genotypeAssignments.(genField))
+            mouseGenotype = genField;
+            genotypeDisplayName = genotypeNames{j};
+            break;
+        end
+    end
+    
+    if isempty(mouseGenotype)
         fprintf('Skipping mouse %s (no genotype assigned)...\n', currentMouseID);
         continue;
     end
     
-    fprintf('Processing mouse %s (genotype: %s)...\n', currentMouseID, strrep(mouseGenotype, '_', '-'));
+    fprintf('Processing mouse %s (genotype: %s)...\n', currentMouseID, genotypeDisplayName);
     
     try
         % Read the CSV file with all necessary columns
@@ -364,32 +408,27 @@ fprintf('\n');
 %% Calculate per-day statistics
 fprintf('Calculating per-day statistics...\n');
 
-% Create structures to store per-day statistics
-dayStats = struct();
-dayStats.wild_type = struct();
-dayStats.mutant = struct();
-
 numDays = length(allDays);
 
 % For each genotype, calculate stats for each day
-for genotype = {'wild_type', 'mutant'}
-    gen = genotype{1};
+for i = 1:numGenotypes
+    genField = genotypeFieldNames{i};
     
     % Initialize per-day storage
     for d = 1:numDays
         dayKey = sprintf('day%d', d);
-        dayStats.(gen).(dayKey) = struct();
-        dayStats.(gen).(dayKey).sleep = struct('counts', [], 'binned', []);
-        dayStats.(gen).(dayKey).light = struct('counts', [], 'binned', []);
-        dayStats.(gen).(dayKey).dark = struct('counts', [], 'binned', []);
+        dayStats.(genField).(dayKey) = struct();
+        dayStats.(genField).(dayKey).sleep = struct('counts', [], 'binned', []);
+        dayStats.(genField).(dayKey).light = struct('counts', [], 'binned', []);
+        dayStats.(genField).(dayKey).dark = struct('counts', [], 'binned', []);
     end
     
     % Process each mouse of this genotype
-    if isfield(dayData, gen)
-        mouseFields = fieldnames(dayData.(gen));
+    if isfield(dayData, genField)
+        mouseFields = fieldnames(dayData.(genField));
         for m = 1:length(mouseFields)
             mouseFieldName = mouseFields{m};
-            mouseData = dayData.(gen).(mouseFieldName);
+            mouseData = dayData.(genField).(mouseFieldName);
             
             % Process each day for this mouse
             mouseDayFields = fieldnames(mouseData);
@@ -402,9 +441,9 @@ for genotype = {'wild_type', 'mutant'}
                 darkBouts = mouseData.(dayKey).dark;
                 
                 % Store counts
-                dayStats.(gen).(dayKey).sleep.counts = [dayStats.(gen).(dayKey).sleep.counts; length(sleepBouts)];
-                dayStats.(gen).(dayKey).light.counts = [dayStats.(gen).(dayKey).light.counts; length(lightBouts)];
-                dayStats.(gen).(dayKey).dark.counts = [dayStats.(gen).(dayKey).dark.counts; length(darkBouts)];
+                dayStats.(genField).(dayKey).sleep.counts = [dayStats.(genField).(dayKey).sleep.counts; length(sleepBouts)];
+                dayStats.(genField).(dayKey).light.counts = [dayStats.(genField).(dayKey).light.counts; length(lightBouts)];
+                dayStats.(genField).(dayKey).dark.counts = [dayStats.(genField).(dayKey).dark.counts; length(darkBouts)];
                 
                 % Bin the data
                 sleepBinned = histcounts(sleepBouts, binEdges);
@@ -412,9 +451,9 @@ for genotype = {'wild_type', 'mutant'}
                 darkBinned = histcounts(darkBouts, binEdges);
                 
                 % Store binned data
-                dayStats.(gen).(dayKey).sleep.binned = [dayStats.(gen).(dayKey).sleep.binned; sleepBinned];
-                dayStats.(gen).(dayKey).light.binned = [dayStats.(gen).(dayKey).light.binned; lightBinned];
-                dayStats.(gen).(dayKey).dark.binned = [dayStats.(gen).(dayKey).dark.binned; darkBinned];
+                dayStats.(genField).(dayKey).sleep.binned = [dayStats.(genField).(dayKey).sleep.binned; sleepBinned];
+                dayStats.(genField).(dayKey).light.binned = [dayStats.(genField).(dayKey).light.binned; lightBinned];
+                dayStats.(genField).(dayKey).dark.binned = [dayStats.(genField).(dayKey).dark.binned; darkBinned];
             end
         end
     end
@@ -424,27 +463,27 @@ for genotype = {'wild_type', 'mutant'}
         dayKey = sprintf('day%d', d);
         
         % Sleep bouts
-        if ~isempty(dayStats.(gen).(dayKey).sleep.counts)
-            dayStats.(gen).(dayKey).sleep.mean_count = mean(dayStats.(gen).(dayKey).sleep.counts);
-            dayStats.(gen).(dayKey).sleep.sem_count = std(dayStats.(gen).(dayKey).sleep.counts) / sqrt(length(dayStats.(gen).(dayKey).sleep.counts));
-            dayStats.(gen).(dayKey).sleep.mean_binned = mean(dayStats.(gen).(dayKey).sleep.binned, 1);
-            dayStats.(gen).(dayKey).sleep.sem_binned = std(dayStats.(gen).(dayKey).sleep.binned, 0, 1) / sqrt(size(dayStats.(gen).(dayKey).sleep.binned, 1));
+        if ~isempty(dayStats.(genField).(dayKey).sleep.counts)
+            dayStats.(genField).(dayKey).sleep.mean_count = mean(dayStats.(genField).(dayKey).sleep.counts);
+            dayStats.(genField).(dayKey).sleep.sem_count = std(dayStats.(genField).(dayKey).sleep.counts) / sqrt(length(dayStats.(genField).(dayKey).sleep.counts));
+            dayStats.(genField).(dayKey).sleep.mean_binned = mean(dayStats.(genField).(dayKey).sleep.binned, 1);
+            dayStats.(genField).(dayKey).sleep.sem_binned = std(dayStats.(genField).(dayKey).sleep.binned, 0, 1) / sqrt(size(dayStats.(genField).(dayKey).sleep.binned, 1));
         end
         
         % Light phase
-        if ~isempty(dayStats.(gen).(dayKey).light.counts)
-            dayStats.(gen).(dayKey).light.mean_count = mean(dayStats.(gen).(dayKey).light.counts);
-            dayStats.(gen).(dayKey).light.sem_count = std(dayStats.(gen).(dayKey).light.counts) / sqrt(length(dayStats.(gen).(dayKey).light.counts));
-            dayStats.(gen).(dayKey).light.mean_binned = mean(dayStats.(gen).(dayKey).light.binned, 1);
-            dayStats.(gen).(dayKey).light.sem_binned = std(dayStats.(gen).(dayKey).light.binned, 0, 1) / sqrt(size(dayStats.(gen).(dayKey).light.binned, 1));
+        if ~isempty(dayStats.(genField).(dayKey).light.counts)
+            dayStats.(genField).(dayKey).light.mean_count = mean(dayStats.(genField).(dayKey).light.counts);
+            dayStats.(genField).(dayKey).light.sem_count = std(dayStats.(genField).(dayKey).light.counts) / sqrt(length(dayStats.(genField).(dayKey).light.counts));
+            dayStats.(genField).(dayKey).light.mean_binned = mean(dayStats.(genField).(dayKey).light.binned, 1);
+            dayStats.(genField).(dayKey).light.sem_binned = std(dayStats.(genField).(dayKey).light.binned, 0, 1) / sqrt(size(dayStats.(genField).(dayKey).light.binned, 1));
         end
         
         % Dark phase
-        if ~isempty(dayStats.(gen).(dayKey).dark.counts)
-            dayStats.(gen).(dayKey).dark.mean_count = mean(dayStats.(gen).(dayKey).dark.counts);
-            dayStats.(gen).(dayKey).dark.sem_count = std(dayStats.(gen).(dayKey).dark.counts) / sqrt(length(dayStats.(gen).(dayKey).dark.counts));
-            dayStats.(gen).(dayKey).dark.mean_binned = mean(dayStats.(gen).(dayKey).dark.binned, 1);
-            dayStats.(gen).(dayKey).dark.sem_binned = std(dayStats.(gen).(dayKey).dark.binned, 0, 1) / sqrt(size(dayStats.(gen).(dayKey).dark.binned, 1));
+        if ~isempty(dayStats.(genField).(dayKey).dark.counts)
+            dayStats.(genField).(dayKey).dark.mean_count = mean(dayStats.(genField).(dayKey).dark.counts);
+            dayStats.(genField).(dayKey).dark.sem_count = std(dayStats.(genField).(dayKey).dark.counts) / sqrt(length(dayStats.(genField).(dayKey).dark.counts));
+            dayStats.(genField).(dayKey).dark.mean_binned = mean(dayStats.(genField).(dayKey).dark.binned, 1);
+            dayStats.(genField).(dayKey).dark.sem_binned = std(dayStats.(genField).(dayKey).dark.binned, 0, 1) / sqrt(size(dayStats.(genField).(dayKey).dark.binned, 1));
         end
     end
 end
@@ -455,242 +494,70 @@ meanCounts = struct();
 stdCounts = struct();
 semCounts = struct(); % Standard error of the mean
 
-for genotype = {'wild_type', 'mutant'}
-    gen = genotype{1};
-    if isfield(epochCounts, gen)
+for i = 1:numGenotypes
+    genField = genotypeFieldNames{i};
+    
+    if isfield(epochCounts, genField)
         % Calculate mean and std for all sleep bouts
-        if ~isempty(epochCounts.(gen).sleep)
-            meanCounts.(gen).sleep = mean(epochCounts.(gen).sleep, 1);
-            stdCounts.(gen).sleep = std(epochCounts.(gen).sleep, 0, 1);
-            semCounts.(gen).sleep = stdCounts.(gen).sleep / sqrt(size(epochCounts.(gen).sleep, 1));
+        if ~isempty(epochCounts.(genField).sleep)
+            meanCounts.(genField).sleep = mean(epochCounts.(genField).sleep, 1);
+            stdCounts.(genField).sleep = std(epochCounts.(genField).sleep, 0, 1);
+            semCounts.(genField).sleep = stdCounts.(genField).sleep / sqrt(size(epochCounts.(genField).sleep, 1));
         else
-            fprintf('No sleep bout data found for genotype: %s\n', gen);
-            meanCounts.(gen).sleep = zeros(1, numBins);
-            stdCounts.(gen).sleep = zeros(1, numBins);
-            semCounts.(gen).sleep = zeros(1, numBins);
+            fprintf('No sleep bout data found for genotype: %s\n', genotypeNames{i});
+            meanCounts.(genField).sleep = zeros(1, numBins);
+            stdCounts.(genField).sleep = zeros(1, numBins);
+            semCounts.(genField).sleep = zeros(1, numBins);
         end
         
         % Calculate mean and std for light phase bouts
-        if ~isempty(epochCounts.(gen).light)
-            meanCounts.(gen).light = mean(epochCounts.(gen).light, 1);
-            stdCounts.(gen).light = std(epochCounts.(gen).light, 0, 1);
-            semCounts.(gen).light = stdCounts.(gen).light / sqrt(size(epochCounts.(gen).light, 1));
+        if ~isempty(epochCounts.(genField).light)
+            meanCounts.(genField).light = mean(epochCounts.(genField).light, 1);
+            stdCounts.(genField).light = std(epochCounts.(genField).light, 0, 1);
+            semCounts.(genField).light = stdCounts.(genField).light / sqrt(size(epochCounts.(genField).light, 1));
         else
-            fprintf('No light phase data found for genotype: %s\n', gen);
-            meanCounts.(gen).light = zeros(1, numBins);
-            stdCounts.(gen).light = zeros(1, numBins);
-            semCounts.(gen).light = zeros(1, numBins);
+            fprintf('No light phase data found for genotype: %s\n', genotypeNames{i});
+            meanCounts.(genField).light = zeros(1, numBins);
+            stdCounts.(genField).light = zeros(1, numBins);
+            semCounts.(genField).light = zeros(1, numBins);
         end
         
         % Calculate mean and std for dark phase bouts
-        if ~isempty(epochCounts.(gen).dark)
-            meanCounts.(gen).dark = mean(epochCounts.(gen).dark, 1);
-            stdCounts.(gen).dark = std(epochCounts.(gen).dark, 0, 1);
-            semCounts.(gen).dark = stdCounts.(gen).dark / sqrt(size(epochCounts.(gen).dark, 1));
+        if ~isempty(epochCounts.(genField).dark)
+            meanCounts.(genField).dark = mean(epochCounts.(genField).dark, 1);
+            stdCounts.(genField).dark = std(epochCounts.(genField).dark, 0, 1);
+            semCounts.(genField).dark = stdCounts.(genField).dark / sqrt(size(epochCounts.(genField).dark, 1));
         else
-            fprintf('No dark phase data found for genotype: %s\n', gen);
-            meanCounts.(gen).dark = zeros(1, numBins);
-            stdCounts.(gen).dark = zeros(1, numBins);
-            semCounts.(gen).dark = zeros(1, numBins);
+            fprintf('No dark phase data found for genotype: %s\n', genotypeNames{i});
+            meanCounts.(genField).dark = zeros(1, numBins);
+            stdCounts.(genField).dark = zeros(1, numBins);
+            semCounts.(genField).dark = zeros(1, numBins);
         end
     end
 end
 
-%% Export statistics to multiple sheets in an Excel file
-fprintf('Creating Excel export with multiple sheets...\n');
-
-% Create a consistent bin labels array that includes "Total"
-allBinLabels = ['Total'; binLabels']; 
-
-% 1. Create combined table for all sleep data (total + light/dark + genotype stats)
-fprintf('Preparing combined total sleep data sheet...\n');
-totalBinTable = array2table(zeros(length(allBinLabels), 0));
-totalBinTable.Bin = allBinLabels;
-
-% Add individual mouse data first
-for genotype = {'wild_type', 'mutant'}
-    gen = genotype{1};
-    
-    if isfield(animalIDs, gen) && ~isempty(animalIDs.(gen))
-        for m = 1:length(animalIDs.(gen))
-            mouseID = animalIDs.(gen){m};
-            fprintf('  Adding data for mouse: %s\n', mouseID);
-            
-            % Create data columns for all sleep phases
-            if isfield(totalCounts, gen) && length(totalCounts.(gen).sleep) >= m
-                sleepData = [totalCounts.(gen).sleep(m); epochCounts.(gen).sleep(m,:)'];
-                lightData = [totalCounts.(gen).light(m); epochCounts.(gen).light(m,:)'];
-                darkData = [totalCounts.(gen).dark(m); epochCounts.(gen).dark(m,:)'];
-                
-                % Add all columns for this mouse
-                totalBinTable.([mouseID '_Sleep']) = sleepData;
-                totalBinTable.([mouseID '_Light']) = lightData;
-                totalBinTable.([mouseID '_Dark']) = darkData;
-            end
-        end
-    end
-end
-
-% Add genotype statistics for all phases
-for genotype = {'wild_type', 'mutant'}
-    gen = genotype{1};
-    display_name = strrep(gen, '_', '-'); % Convert 'wild_type' to 'wild-type'
-    
-    if isfield(totalCounts, gen)
-        % Sleep statistics
-        totalBinTable.([display_name '_Sleep_Mean']) = [mean(totalCounts.(gen).sleep); meanCounts.(gen).sleep'];
-        totalBinTable.([display_name '_Sleep_SD']) = [std(totalCounts.(gen).sleep); stdCounts.(gen).sleep'];
-        totalSEM_sleep = std(totalCounts.(gen).sleep)/sqrt(length(totalCounts.(gen).sleep));
-        totalBinTable.([display_name '_Sleep_SEM']) = [totalSEM_sleep; semCounts.(gen).sleep'];
-        
-        % Light phase statistics
-        totalBinTable.([display_name '_Light_Mean']) = [mean(totalCounts.(gen).light); meanCounts.(gen).light'];
-        totalBinTable.([display_name '_Light_SD']) = [std(totalCounts.(gen).light); stdCounts.(gen).light'];
-        totalSEM_light = std(totalCounts.(gen).light)/sqrt(length(totalCounts.(gen).light));
-        totalBinTable.([display_name '_Light_SEM']) = [totalSEM_light; semCounts.(gen).light'];
-        
-        % Dark phase statistics
-        totalBinTable.([display_name '_Dark_Mean']) = [mean(totalCounts.(gen).dark); meanCounts.(gen).dark'];
-        totalBinTable.([display_name '_Dark_SD']) = [std(totalCounts.(gen).dark); stdCounts.(gen).dark'];
-        totalSEM_dark = std(totalCounts.(gen).dark)/sqrt(length(totalCounts.(gen).dark));
-        totalBinTable.([display_name '_Dark_SEM']) = [totalSEM_dark; semCounts.(gen).dark'];
-    end
-end
-
-% Create per-day tables
-fprintf('Preparing per-day data sheets...\n');
-
-for d = 1:numDays
-    dayKey = sprintf('day%d', d);
-    
-    % Create table for this day
-    dayTable = array2table(zeros(length(allBinLabels), 0));
-    dayTable.Bin = allBinLabels;
-    
-    % Add individual mouse data first
-    fprintf('  Adding individual mouse data for Day %d...\n', d);
-    for genotype = {'wild_type', 'mutant'}
-        gen = genotype{1};
-        
-        if isfield(animalIDs, gen) && ~isempty(animalIDs.(gen))
-            for m = 1:length(animalIDs.(gen))
-                mouseID = animalIDs.(gen){m};
-                mouseFieldName = makeValidFieldName(mouseID);
-                
-                % Check if this mouse has data for this day
-                if isfield(dayData, gen) && isfield(dayData.(gen), mouseFieldName)
-                    mouseDayData = dayData.(gen).(mouseFieldName);
-                    
-                    if isfield(mouseDayData, dayKey)
-                        % Get data for this specific day
-                        sleepBouts = mouseDayData.(dayKey).sleep;
-                        lightBouts = mouseDayData.(dayKey).light;
-                        darkBouts = mouseDayData.(dayKey).dark;
-                        
-                        % Bin the data
-                        sleepBinned = histcounts(sleepBouts, binEdges);
-                        lightBinned = histcounts(lightBouts, binEdges);
-                        darkBinned = histcounts(darkBouts, binEdges);
-                        
-                        % Create columns with total count + binned data
-                        sleepData = [length(sleepBouts); sleepBinned'];
-                        lightData = [length(lightBouts); lightBinned'];
-                        darkData = [length(darkBouts); darkBinned'];
-                        
-                        % Add columns for this mouse
-                        dayTable.([mouseID '_Sleep']) = sleepData;
-                        dayTable.([mouseID '_Light']) = lightData;
-                        dayTable.([mouseID '_Dark']) = darkData;
-                        
-                        fprintf('    Added data for mouse %s\n', mouseID);
-                    else
-                        % Mouse has no data for this day - add zeros
-                        zeroData = zeros(length(allBinLabels), 1);
-                        dayTable.([mouseID '_Sleep']) = zeroData;
-                        dayTable.([mouseID '_Light']) = zeroData;
-                        dayTable.([mouseID '_Dark']) = zeroData;
-                        
-                        fprintf('    Added zero data for mouse %s (no data for this day)\n', mouseID);
-                    end
-                else
-                    % Mouse not found in dayData - add zeros
-                    zeroData = zeros(length(allBinLabels), 1);
-                    dayTable.([mouseID '_Sleep']) = zeroData;
-                    dayTable.([mouseID '_Light']) = zeroData;
-                    dayTable.([mouseID '_Dark']) = zeroData;
-                    
-                    fprintf('    Added zero data for mouse %s (not found in dayData)\n', mouseID);
-                end
-            end
-        end
-    end
-    
-    % Add genotype statistics (means and SEMs)
-    fprintf('  Adding genotype statistics for Day %d...\n', d);
-    for genotype = {'wild_type', 'mutant'}
-        gen = genotype{1};
-        display_name = strrep(gen, '_', '-');
-        
-        if isfield(dayStats, gen) && isfield(dayStats.(gen), dayKey)
-            % Add mean and SEM for sleep, light, and dark phases
-            phases = {'sleep', 'light', 'dark'};
-            
-            for p = 1:length(phases)
-                phase = phases{p};
-                
-                if isfield(dayStats.(gen).(dayKey), phase) && ...
-                   isfield(dayStats.(gen).(dayKey).(phase), 'mean_count')
-                    
-                    % Total count + binned means
-                    meanData = [dayStats.(gen).(dayKey).(phase).mean_count; ...
-                               dayStats.(gen).(dayKey).(phase).mean_binned'];
-                    
-                    % Total SEM + binned SEMs  
-                    semData = [dayStats.(gen).(dayKey).(phase).sem_count; ...
-                              dayStats.(gen).(dayKey).(phase).sem_binned'];
-                    
-                    dayTable.([display_name '_' phase '_Mean']) = meanData;
-                    dayTable.([display_name '_' phase '_SEM']) = semData;
-                end
-            end
-        end
-    end
-    
-    % Write day table to Excel with new sheet name
-    sheetName = sprintf('Day_%d_Bin', d);  % Changed from 'Day_%d_GT_Bin' to 'Day_%d_Bin'
-    xlsFilePath = fullfile(mainFolder, 'sleep_bout_analysis.xls');
-    writetable(dayTable, xlsFilePath, 'Sheet', sheetName);
-    
-    fprintf('  Added Day %d data to Excel sheet: %s\n', d, sheetName);
-end
-
-% 2. Create a summary table mapping mice to genotypes
-mouseGenotypeSummary = table();
-mouseGenotypeSummary.MouseID = [animalIDs.wild_type(:); animalIDs.mutant(:)];
-genotypes_list = [repmat({'wild-type'}, length(animalIDs.wild_type), 1); 
-                  repmat({'mutant'}, length(animalIDs.mutant), 1)];
-mouseGenotypeSummary.Genotype = genotypes_list;
-
-% Write all tables to different sheets in the Excel file
-xlsFilePath = fullfile(mainFolder, 'sleep_bout_analysis.xls');
-fprintf('Writing combined sheets to Excel file: %s\n', xlsFilePath);
-
-% Write sheets in desired order: Per-day sheets first, then combined sheets
-% Note: Per-day sheets were already written in the loop above
-
-% Write combined sheet - now includes all data (total + light/dark + genotype stats)
-writetable(totalBinTable, xlsFilePath, 'Sheet', 'Total_Bin');
-writetable(mouseGenotypeSummary, xlsFilePath, 'Sheet', 'Mouse_Genotype_Summary');
-
-fprintf('Excel file created successfully.\n');
-
-%% Create figures
+%% Create figures with dynamic colors and legends
 % Turn off figure visibility to prevent windows from opening
 set(0, 'DefaultFigureVisible', 'off');
 
-% Colors for plotting
-wtColor = [0, 0, 0.8]; % Blue for wild-type
-mutColor = [0.8, 0, 0]; % Red for mutant
+% Generate distinct colors for each genotype
+if numGenotypes <= 8
+    % Use ColorBrewer-inspired colors for better visualization
+    baseColors = [
+        0.89, 0.10, 0.11;  % Red
+        0.22, 0.49, 0.72;  % Blue  
+        0.30, 0.69, 0.29;  % Green
+        0.60, 0.31, 0.64;  % Purple
+        1.00, 0.50, 0.00;  % Orange
+        0.65, 0.34, 0.16;  % Brown
+        0.97, 0.51, 0.75;  % Pink
+        0.40, 0.40, 0.40;  % Gray
+    ];
+    genotypeColors = baseColors(1:numGenotypes, :);
+else
+    % Use lines colormap for many genotypes
+    genotypeColors = colormap(lines(numGenotypes));
+end
 
 % Define the categories to plot
 categories = {'sleep', 'light', 'dark'};
@@ -709,34 +576,26 @@ for c = 1:length(categories)
     plotHandles = [];
     legendTexts = {};
     
-    % Plot individual data points for wild-type
-    if isfield(epochCounts, 'wild_type') && ~isempty(epochCounts.wild_type.(category))
-        for i = 1:size(epochCounts.wild_type.(category), 1)
-            scatter(1:numBins, epochCounts.wild_type.(category)(i,:), 50, wtColor, 'o', 'filled', 'MarkerFaceAlpha', 0.3);
+    % Plot data for each genotype
+    for i = 1:numGenotypes
+        genField = genotypeFieldNames{i};
+        genotypeName = genotypeNames{i};
+        color = genotypeColors(i, :);
+        
+        % Plot individual data points
+        if isfield(epochCounts, genField) && ~isempty(epochCounts.(genField).(category))
+            for j = 1:size(epochCounts.(genField).(category), 1)
+                scatter((1:numBins) + (i-1)*0.1, epochCounts.(genField).(category)(j,:), 50, color, 'o', 'filled', 'MarkerFaceAlpha', 0.3);
+            end
+            
+            % Plot mean with error bars and capture handle
+            h = errorbar((1:numBins) + (i-1)*0.1, meanCounts.(genField).(category), semCounts.(genField).(category), ...
+                'Color', color, 'LineWidth', 2, 'Marker', 'o', 'MarkerFaceColor', color, 'MarkerSize', 10);
+            
+            % Add to legend arrays
+            plotHandles = [plotHandles, h];
+            legendTexts{end+1} = sprintf('%s (Mean ± SEM)', genotypeName);
         end
-        
-        % Plot mean with error bars and capture handle
-        h_wt = errorbar(1:numBins, meanCounts.wild_type.(category), semCounts.wild_type.(category), ...
-            'Color', wtColor, 'LineWidth', 2, 'Marker', 'o', 'MarkerFaceColor', wtColor, 'MarkerSize', 10);
-        
-        % Add to legend arrays
-        plotHandles = [plotHandles, h_wt];
-        legendTexts{end+1} = 'Wild-type (Mean ± SEM)';
-    end
-    
-    % Plot individual data points for mutant
-    if isfield(epochCounts, 'mutant') && ~isempty(epochCounts.mutant.(category))
-        for i = 1:size(epochCounts.mutant.(category), 1)
-            scatter((1:numBins)+0.2, epochCounts.mutant.(category)(i,:), 50, mutColor, 'o', 'filled', 'MarkerFaceAlpha', 0.3);
-        end
-        
-        % Plot mean with error bars and capture handle
-        h_mut = errorbar((1:numBins)+0.2, meanCounts.mutant.(category), semCounts.mutant.(category), ...
-            'Color', mutColor, 'LineWidth', 2, 'Marker', 'o', 'MarkerFaceColor', mutColor, 'MarkerSize', 10);
-        
-        % Add to legend arrays
-        plotHandles = [plotHandles, h_mut];
-        legendTexts{end+1} = 'Mutant (Mean ± SEM)';
     end
     
     % Add labels and legend
@@ -761,7 +620,7 @@ end
 
 fprintf('All figures saved to %s\n', outputFolder);
 
-%% Create per-day plots
+%% Create per-day plots with dynamic genotypes
 fprintf('Creating per-day plots...\n');
 
 % Plot sleep bout counts across days
@@ -769,56 +628,45 @@ figure('Name', 'Sleep Bout Counts Across Days', 'Position', [100, 100, 1000, 600
 hold on;
 
 dayNumbers = 1:numDays;
-wtMeans = zeros(1, numDays);
-wtSEMs = zeros(1, numDays);
-mutMeans = zeros(1, numDays);
-mutSEMs = zeros(1, numDays);
 
 % Initialize handles for legend
 plotHandles = [];
 legendTexts = {};
 
-% Plot individual data points for wild-type mice
-for d = 1:numDays
-    dayKey = sprintf('day%d', d);
+% Plot data for each genotype
+for i = 1:numGenotypes
+    genField = genotypeFieldNames{i};
+    genotypeName = genotypeNames{i};
+    color = genotypeColors(i, :);
     
-    if isfield(dayStats.wild_type, dayKey) && ~isempty(dayStats.wild_type.(dayKey).sleep.counts)
-        individualCounts = dayStats.wild_type.(dayKey).sleep.counts;
-        % Add small random jitter to x-position for visibility
-        xPos = d + (rand(size(individualCounts)) - 0.5) * 0.1;
-        scatter(xPos, individualCounts, 50, wtColor, 'o', 'filled', 'MarkerFaceAlpha', 0.3);
-        
-        % Store mean and SEM
-        wtMeans(d) = dayStats.wild_type.(dayKey).sleep.mean_count;
-        wtSEMs(d) = dayStats.wild_type.(dayKey).sleep.sem_count;
-    end
-end
-
-% Plot individual data points for mutant mice
-for d = 1:numDays
-    dayKey = sprintf('day%d', d);
+    % Initialize arrays for this genotype
+    genotypeMeans = zeros(1, numDays);
+    genotypeSEMs = zeros(1, numDays);
     
-    if isfield(dayStats.mutant, dayKey) && ~isempty(dayStats.mutant.(dayKey).sleep.counts)
-        individualCounts = dayStats.mutant.(dayKey).sleep.counts;
-        % Add small random jitter to x-position for visibility
-        xPos = d + (rand(size(individualCounts)) - 0.5) * 0.1 + 0.2;
-        scatter(xPos, individualCounts, 50, mutColor, 'o', 'filled', 'MarkerFaceAlpha', 0.3);
+    % Plot individual data points and collect means/SEMs
+    for d = 1:numDays
+        dayKey = sprintf('day%d', d);
         
-        % Store mean and SEM
-        mutMeans(d) = dayStats.mutant.(dayKey).sleep.mean_count;
-        mutSEMs(d) = dayStats.mutant.(dayKey).sleep.sem_count;
+        if isfield(dayStats.(genField), dayKey) && ~isempty(dayStats.(genField).(dayKey).sleep.counts)
+            individualCounts = dayStats.(genField).(dayKey).sleep.counts;
+            % Add small random jitter to x-position for visibility
+            xPos = d + (rand(size(individualCounts)) - 0.5) * 0.1 + (i-1)*0.15;
+            scatter(xPos, individualCounts, 50, color, 'o', 'filled', 'MarkerFaceAlpha', 0.3);
+            
+            % Store mean and SEM
+            genotypeMeans(d) = dayStats.(genField).(dayKey).sleep.mean_count;
+            genotypeSEMs(d) = dayStats.(genField).(dayKey).sleep.sem_count;
+        end
     end
+    
+    % Plot means with error bars on top
+    h = errorbar(dayNumbers + (i-1)*0.15, genotypeMeans, genotypeSEMs, 'Color', color, 'LineStyle', 'none', ...
+        'Marker', 'o', 'MarkerFaceColor', color, 'MarkerSize', 10, 'LineWidth', 2, 'CapSize', 6);
+    
+    % Add to legend arrays
+    plotHandles = [plotHandles, h];
+    legendTexts{end+1} = sprintf('%s (Mean ± SEM)', genotypeName);
 end
-
-% Plot means with error bars on top
-h_wt = errorbar(dayNumbers, wtMeans, wtSEMs, 'Color', wtColor, 'LineStyle', 'none', ...
-    'Marker', 'o', 'MarkerFaceColor', wtColor, 'MarkerSize', 10, 'LineWidth', 2, 'CapSize', 6);
-h_mut = errorbar(dayNumbers + 0.2, mutMeans, mutSEMs, 'Color', mutColor, 'LineStyle', 'none', ...
-    'Marker', 'o', 'MarkerFaceColor', mutColor, 'MarkerSize', 10, 'LineWidth', 2, 'CapSize', 6);
-
-% Add to legend arrays
-plotHandles = [h_wt, h_mut];
-legendTexts = {'Wild-type (Mean ± SEM)', 'Mutant (Mean ± SEM)'};
 
 title('Sleep Bout Counts Across Experimental Days');
 xlabel('Experimental Day');
@@ -842,58 +690,45 @@ for p = 1:length(phases)
     figure('Name', [phaseLabel ' Sleep Bout Counts Across Days'], 'Position', [100, 100, 1000, 600]);
     hold on;
     
-    wtMeans_phase = zeros(1, numDays);
-    wtSEMs_phase = zeros(1, numDays);
-    mutMeans_phase = zeros(1, numDays);
-    mutSEMs_phase = zeros(1, numDays);
-    
     % Initialize handles for legend
     plotHandles_phase = [];
     legendTexts_phase = {};
     
-    % Plot individual data points for wild-type mice
-    for d = 1:numDays
-        dayKey = sprintf('day%d', d);
+    % Plot data for each genotype
+    for i = 1:numGenotypes
+        genField = genotypeFieldNames{i};
+        genotypeName = genotypeNames{i};
+        color = genotypeColors(i, :);
         
-        if isfield(dayStats.wild_type, dayKey) && isfield(dayStats.wild_type.(dayKey).(phase), 'counts') && ...
-           ~isempty(dayStats.wild_type.(dayKey).(phase).counts)
-            individualCounts = dayStats.wild_type.(dayKey).(phase).counts;
-            % Add small random jitter to x-position for visibility
-            xPos = d + (rand(size(individualCounts)) - 0.5) * 0.1;
-            scatter(xPos, individualCounts, 50, wtColor, 'o', 'filled', 'MarkerFaceAlpha', 0.3);
-            
-            % Store mean and SEM
-            wtMeans_phase(d) = dayStats.wild_type.(dayKey).(phase).mean_count;
-            wtSEMs_phase(d) = dayStats.wild_type.(dayKey).(phase).sem_count;
-        end
-    end
-    
-    % Plot individual data points for mutant mice
-    for d = 1:numDays
-        dayKey = sprintf('day%d', d);
+        % Initialize arrays for this genotype and phase
+        genotypeMeans_phase = zeros(1, numDays);
+        genotypeSEMs_phase = zeros(1, numDays);
         
-        if isfield(dayStats.mutant, dayKey) && isfield(dayStats.mutant.(dayKey).(phase), 'counts') && ...
-           ~isempty(dayStats.mutant.(dayKey).(phase).counts)
-            individualCounts = dayStats.mutant.(dayKey).(phase).counts;
-            % Add small random jitter to x-position for visibility
-            xPos = d + (rand(size(individualCounts)) - 0.5) * 0.1 + 0.2;
-            scatter(xPos, individualCounts, 50, mutColor, 'o', 'filled', 'MarkerFaceAlpha', 0.3);
+        % Plot individual data points and collect means/SEMs
+        for d = 1:numDays
+            dayKey = sprintf('day%d', d);
             
-            % Store mean and SEM
-            mutMeans_phase(d) = dayStats.mutant.(dayKey).(phase).mean_count;
-            mutSEMs_phase(d) = dayStats.mutant.(dayKey).(phase).sem_count;
+            if isfield(dayStats.(genField), dayKey) && isfield(dayStats.(genField).(dayKey).(phase), 'counts') && ...
+               ~isempty(dayStats.(genField).(dayKey).(phase).counts)
+                individualCounts = dayStats.(genField).(dayKey).(phase).counts;
+                % Add small random jitter to x-position for visibility
+                xPos = d + (rand(size(individualCounts)) - 0.5) * 0.1 + (i-1)*0.15;
+                scatter(xPos, individualCounts, 50, color, 'o', 'filled', 'MarkerFaceAlpha', 0.3);
+                
+                % Store mean and SEM
+                genotypeMeans_phase(d) = dayStats.(genField).(dayKey).(phase).mean_count;
+                genotypeSEMs_phase(d) = dayStats.(genField).(dayKey).(phase).sem_count;
+            end
         end
+        
+        % Plot means with error bars on top
+        h_phase = errorbar(dayNumbers + (i-1)*0.15, genotypeMeans_phase, genotypeSEMs_phase, 'Color', color, 'LineStyle', 'none', ...
+            'Marker', 'o', 'MarkerFaceColor', color, 'MarkerSize', 10, 'LineWidth', 2, 'CapSize', 6);
+        
+        % Add to legend arrays
+        plotHandles_phase = [plotHandles_phase, h_phase];
+        legendTexts_phase{end+1} = sprintf('%s (Mean ± SEM)', genotypeName);
     end
-    
-    % Plot means with error bars on top
-    h_wt_phase = errorbar(dayNumbers, wtMeans_phase, wtSEMs_phase, 'Color', wtColor, 'LineStyle', 'none', ...
-        'Marker', 'o', 'MarkerFaceColor', wtColor, 'MarkerSize', 10, 'LineWidth', 2, 'CapSize', 6);
-    h_mut_phase = errorbar(dayNumbers + 0.2, mutMeans_phase, mutSEMs_phase, 'Color', mutColor, 'LineStyle', 'none', ...
-        'Marker', 'o', 'MarkerFaceColor', mutColor, 'MarkerSize', 10, 'LineWidth', 2, 'CapSize', 6);
-    
-    % Add to legend arrays
-    plotHandles_phase = [h_wt_phase, h_mut_phase];
-    legendTexts_phase = {'Wild-type (Mean ± SEM)', 'Mutant (Mean ± SEM)'};
     
     title([phaseLabel ' Sleep Bout Counts Across Experimental Days']);
     xlabel('Experimental Day');
@@ -909,7 +744,7 @@ end
 
 fprintf('Per-day analysis complete!\n');
 
-%% ZT hour analysis
+%% ZT hour analysis with dynamic genotypes
 fprintf('\n==========================================\n');
 fprintf('Beginning Zeitgeber Time (ZT) Analysis\n');
 fprintf('==========================================\n');
@@ -923,13 +758,14 @@ end
 
 % Create structures to store data by ZT hour for each genotype and mouse
 ztData = struct();
-ztData.wild_type = struct('counts', zeros(0, numZTHours), 'totalDurations', zeros(0, numZTHours), 'avgDurations', zeros(0, numZTHours));
-ztData.mutant = struct('counts', zeros(0, numZTHours), 'totalDurations', zeros(0, numZTHours), 'avgDurations', zeros(0, numZTHours));
-
-% Create structures to store ZT data by day for each mouse
 ztDataByDay = struct();
-ztDataByDay.wild_type = struct();
-ztDataByDay.mutant = struct();
+
+% Initialize ZT data structures for each genotype
+for i = 1:numGenotypes
+    genField = genotypeFieldNames{i};
+    ztData.(genField) = struct('counts', zeros(0, numZTHours), 'totalDurations', zeros(0, numZTHours), 'avgDurations', zeros(0, numZTHours));
+    ztDataByDay.(genField) = struct();
+end
 
 % Process each CSV file for ZT hour analysis
 fprintf('Processing files for ZT hour analysis...\n');
@@ -939,16 +775,22 @@ for i = 1:length(csvFiles)
     currentMouseID = mouseIDs{i};
     
     % Determine genotype based on user input
-    if ismember(currentMouseID, wtMice)
-        mouseGenotype = 'wild_type';
-    elseif ismember(currentMouseID, mutMice)
-        mouseGenotype = 'mutant';
-    else
-        % Skip mice not assigned to any genotype
+    mouseGenotype = '';
+    genotypeDisplayName = '';
+    for j = 1:numGenotypes
+        genField = genotypeFieldNames{j};
+        if ismember(currentMouseID, genotypeAssignments.(genField))
+            mouseGenotype = genField;
+            genotypeDisplayName = genotypeNames{j};
+            break;
+        end
+    end
+    
+    if isempty(mouseGenotype)
         continue;
     end
     
-    fprintf('Processing ZT data for mouse %s (genotype: %s)...\n', currentMouseID, strrep(mouseGenotype, '_', '-'));
+    fprintf('Processing ZT data for mouse %s (genotype: %s)...\n', currentMouseID, genotypeDisplayName);
     
     try
         % Read the CSV file with all necessary columns
@@ -1118,253 +960,59 @@ ztMean = struct();
 ztStd = struct();
 ztSem = struct(); % Standard error of the mean
 
-for genotype = {'wild_type', 'mutant'}
-    gen = genotype{1};
-    if isfield(ztData, gen)
+for i = 1:numGenotypes
+    genField = genotypeFieldNames{i};
+    genotypeName = genotypeNames{i};
+    
+    if isfield(ztData, genField)
         % Calculate statistics for bout counts
-        if ~isempty(ztData.(gen).counts)
-            ztMean.(gen).counts = mean(ztData.(gen).counts, 1);
-            ztStd.(gen).counts = std(ztData.(gen).counts, 0, 1);
-            ztSem.(gen).counts = ztStd.(gen).counts / sqrt(size(ztData.(gen).counts, 1));
+        if ~isempty(ztData.(genField).counts)
+            ztMean.(genField).counts = mean(ztData.(genField).counts, 1);
+            ztStd.(genField).counts = std(ztData.(genField).counts, 0, 1);
+            ztSem.(genField).counts = ztStd.(genField).counts / sqrt(size(ztData.(genField).counts, 1));
         else
-            fprintf('No ZT bout count data found for genotype: %s\n', gen);
-            ztMean.(gen).counts = zeros(1, numZTHours);
-            ztStd.(gen).counts = zeros(1, numZTHours);
-            ztSem.(gen).counts = zeros(1, numZTHours);
+            fprintf('No ZT bout count data found for genotype: %s\n', genotypeName);
+            ztMean.(genField).counts = zeros(1, numZTHours);
+            ztStd.(genField).counts = zeros(1, numZTHours);
+            ztSem.(genField).counts = zeros(1, numZTHours);
         end
         
         % Calculate statistics for total durations
-        if ~isempty(ztData.(gen).totalDurations)
-            ztMean.(gen).totalDurations = mean(ztData.(gen).totalDurations, 1);
-            ztStd.(gen).totalDurations = std(ztData.(gen).totalDurations, 0, 1);
-            ztSem.(gen).totalDurations = ztStd.(gen).totalDurations / sqrt(size(ztData.(gen).totalDurations, 1));
+        if ~isempty(ztData.(genField).totalDurations)
+            ztMean.(genField).totalDurations = mean(ztData.(genField).totalDurations, 1);
+            ztStd.(genField).totalDurations = std(ztData.(genField).totalDurations, 0, 1);
+            ztSem.(genField).totalDurations = ztStd.(genField).totalDurations / sqrt(size(ztData.(genField).totalDurations, 1));
         else
-            fprintf('No ZT total duration data found for genotype: %s\n', gen);
-            ztMean.(gen).totalDurations = zeros(1, numZTHours);
-            ztStd.(gen).totalDurations = zeros(1, numZTHours);
-            ztSem.(gen).totalDurations = zeros(1, numZTHours);
+            fprintf('No ZT total duration data found for genotype: %s\n', genotypeName);
+            ztMean.(genField).totalDurations = zeros(1, numZTHours);
+            ztStd.(genField).totalDurations = zeros(1, numZTHours);
+            ztSem.(genField).totalDurations = zeros(1, numZTHours);
         end
         
         % Calculate statistics for average durations
-        if ~isempty(ztData.(gen).avgDurations)
-            ztMean.(gen).avgDurations = mean(ztData.(gen).avgDurations, 1);
-            ztStd.(gen).avgDurations = std(ztData.(gen).avgDurations, 0, 1);
-            ztSem.(gen).avgDurations = ztStd.(gen).avgDurations / sqrt(size(ztData.(gen).avgDurations, 1));
+        if ~isempty(ztData.(genField).avgDurations)
+            ztMean.(genField).avgDurations = mean(ztData.(genField).avgDurations, 1);
+            ztStd.(genField).avgDurations = std(ztData.(genField).avgDurations, 0, 1);
+            ztSem.(genField).avgDurations = ztStd.(genField).avgDurations / sqrt(size(ztData.(genField).avgDurations, 1));
         else
-            fprintf('No ZT average duration data found for genotype: %s\n', gen);
-            ztMean.(gen).avgDurations = zeros(1, numZTHours);
-            ztStd.(gen).avgDurations = zeros(1, numZTHours);
-            ztSem.(gen).avgDurations = zeros(1, numZTHours);
+            fprintf('No ZT average duration data found for genotype: %s\n', genotypeName);
+            ztMean.(genField).avgDurations = zeros(1, numZTHours);
+            ztStd.(genField).avgDurations = zeros(1, numZTHours);
+            ztSem.(genField).avgDurations = zeros(1, numZTHours);
         end
     end
 end
 
-%% Calculate per-day ZT statistics by genotype
-fprintf('Calculating per-day ZT statistics...\n');
-
-% Initialize structures for per-day ZT statistics
-ztStatsByDay = struct();
-ztStatsByDay.wild_type = struct();
-ztStatsByDay.mutant = struct();
-
-for d = 1:numDays
-    dayKey = sprintf('day%d', d);
-    
-    for genotype = {'wild_type', 'mutant'}
-        gen = genotype{1};
-        
-        % Initialize storage for this day and genotype
-        ztStatsByDay.(gen).(dayKey) = struct();
-        ztStatsByDay.(gen).(dayKey).counts = struct('data', [], 'mean', zeros(1, numZTHours), 'std', zeros(1, numZTHours), 'sem', zeros(1, numZTHours));
-        ztStatsByDay.(gen).(dayKey).totalDurations = struct('data', [], 'mean', zeros(1, numZTHours), 'std', zeros(1, numZTHours), 'sem', zeros(1, numZTHours));
-        ztStatsByDay.(gen).(dayKey).avgDurations = struct('data', [], 'mean', zeros(1, numZTHours), 'std', zeros(1, numZTHours), 'sem', zeros(1, numZTHours));
-        
-        % Collect data from all mice of this genotype for this day
-        if isfield(ztDataByDay, gen)
-            mouseFields = fieldnames(ztDataByDay.(gen));
-            
-            for m = 1:length(mouseFields)
-                mouseFieldName = mouseFields{m};
-                mouseData = ztDataByDay.(gen).(mouseFieldName);
-                
-                % Add this mouse's data for this day
-                ztStatsByDay.(gen).(dayKey).counts.data = [ztStatsByDay.(gen).(dayKey).counts.data; mouseData.counts(d, :)];
-                ztStatsByDay.(gen).(dayKey).totalDurations.data = [ztStatsByDay.(gen).(dayKey).totalDurations.data; mouseData.totalDurations(d, :)];
-                ztStatsByDay.(gen).(dayKey).avgDurations.data = [ztStatsByDay.(gen).(dayKey).avgDurations.data; mouseData.avgDurations(d, :)];
-            end
-            
-            % Calculate statistics if we have data
-            if ~isempty(ztStatsByDay.(gen).(dayKey).counts.data)
-                ztStatsByDay.(gen).(dayKey).counts.mean = mean(ztStatsByDay.(gen).(dayKey).counts.data, 1);
-                ztStatsByDay.(gen).(dayKey).counts.std = std(ztStatsByDay.(gen).(dayKey).counts.data, 0, 1);
-                ztStatsByDay.(gen).(dayKey).counts.sem = ztStatsByDay.(gen).(dayKey).counts.std / sqrt(size(ztStatsByDay.(gen).(dayKey).counts.data, 1));
-                
-                ztStatsByDay.(gen).(dayKey).totalDurations.mean = mean(ztStatsByDay.(gen).(dayKey).totalDurations.data, 1);
-                ztStatsByDay.(gen).(dayKey).totalDurations.std = std(ztStatsByDay.(gen).(dayKey).totalDurations.data, 0, 1);
-                ztStatsByDay.(gen).(dayKey).totalDurations.sem = ztStatsByDay.(gen).(dayKey).totalDurations.std / sqrt(size(ztStatsByDay.(gen).(dayKey).totalDurations.data, 1));
-                
-                ztStatsByDay.(gen).(dayKey).avgDurations.mean = mean(ztStatsByDay.(gen).(dayKey).avgDurations.data, 1);
-                ztStatsByDay.(gen).(dayKey).avgDurations.std = std(ztStatsByDay.(gen).(dayKey).avgDurations.data, 0, 1);
-                ztStatsByDay.(gen).(dayKey).avgDurations.sem = ztStatsByDay.(gen).(dayKey).avgDurations.std / sqrt(size(ztStatsByDay.(gen).(dayKey).avgDurations.data, 1));
-            end
-        end
-    end
-end
-
-%% Add ZT data to Excel export
-fprintf('Adding ZT data to Excel export...\n');
-
-% Create tables for ZT hour data
-ztCountsTable = array2table(zeros(numZTHours, 0));
-ztCountsTable.ZT_Hour = ztLabels;
-
-ztTotalDurationsTable = array2table(zeros(numZTHours, 0));
-ztTotalDurationsTable.ZT_Hour = ztLabels;
-
-ztAvgDurationsTable = array2table(zeros(numZTHours, 0));
-ztAvgDurationsTable.ZT_Hour = ztLabels;
-
-% Add individual mouse data to tables
-for genotype = {'wild_type', 'mutant'}
-    gen = genotype{1};
-    
-    if isfield(animalIDs, gen) && ~isempty(animalIDs.(gen))
-        for m = 1:min(length(animalIDs.(gen)), size(ztData.(gen).counts, 1))
-            mouseID = animalIDs.(gen){m};
-            
-            % Add counts data
-            ztCountsTable.([mouseID '_Counts']) = ztData.(gen).counts(m,:)';
-            
-            % Add total durations data
-            ztTotalDurationsTable.([mouseID '_Total']) = ztData.(gen).totalDurations(m,:)';
-            
-            % Add average durations data
-            ztAvgDurationsTable.([mouseID '_Avg']) = ztData.(gen).avgDurations(m,:)';
-        end
-    end
-end
-
-% Add genotype statistics to tables
-for genotype = {'wild_type', 'mutant'}
-    gen = genotype{1};
-    display_name = strrep(gen, '_', '-'); % Convert 'wild_type' to 'wild-type'
-    
-    if isfield(ztMean, gen)
-        % Add bout counts statistics
-        ztCountsTable.([display_name '_Mean']) = ztMean.(gen).counts';
-        ztCountsTable.([display_name '_SD']) = ztStd.(gen).counts';
-        ztCountsTable.([display_name '_SEM']) = ztSem.(gen).counts';
-        
-        % Add total durations statistics
-        ztTotalDurationsTable.([display_name '_Mean']) = ztMean.(gen).totalDurations';
-        ztTotalDurationsTable.([display_name '_SD']) = ztStd.(gen).totalDurations';
-        ztTotalDurationsTable.([display_name '_SEM']) = ztSem.(gen).totalDurations';
-        
-        % Add average durations statistics
-        ztAvgDurationsTable.([display_name '_Mean']) = ztMean.(gen).avgDurations';
-        ztAvgDurationsTable.([display_name '_SD']) = ztStd.(gen).avgDurations';
-        ztAvgDurationsTable.([display_name '_SEM']) = ztSem.(gen).avgDurations';
-    end
-end
-
-fprintf('ZT data added to Excel file successfully.\n');
-
-%% Create and write per-day ZT tables
-fprintf('Creating per-day ZT data sheets...\n');
-
-for d = 1:numDays
-    dayKey = sprintf('day%d', d);
-    dayDate = datestr(allDays(d), 'yyyy-mm-dd');
-    
-    fprintf('  Creating ZT data for Day %d (%s)...\n', d, dayDate);
-    
-    % Create tables for this day's ZT data
-    dayZTCountsTable = array2table(zeros(numZTHours, 0));
-    dayZTCountsTable.ZT_Hour = ztLabels;
-    
-    dayZTTotalDurTable = array2table(zeros(numZTHours, 0));
-    dayZTTotalDurTable.ZT_Hour = ztLabels;
-    
-    % Add individual mouse data for this day
-    allMouseIDs_ZT = {};
-    if isfield(animalIDs, 'wild_type')
-        allMouseIDs_ZT = [allMouseIDs_ZT, animalIDs.wild_type];
-    end
-    if isfield(animalIDs, 'mutant')
-        allMouseIDs_ZT = [allMouseIDs_ZT, animalIDs.mutant];
-    end
-    
-    for m = 1:length(allMouseIDs_ZT)
-        mouseID = allMouseIDs_ZT{m};
-        mouseFieldName = makeValidFieldName(mouseID);
-        
-        % Find which genotype this mouse belongs to
-        if isfield(animalIDs, 'wild_type') && any(strcmp(animalIDs.wild_type, mouseID))
-            gen = 'wild_type';
-        elseif isfield(animalIDs, 'mutant') && any(strcmp(animalIDs.mutant, mouseID))
-            gen = 'mutant';
-        else
-            continue;
-        end
-        
-        % Check if this mouse has ZT data
-        if isfield(ztDataByDay, gen) && isfield(ztDataByDay.(gen), mouseFieldName)
-            mouseZTData = ztDataByDay.(gen).(mouseFieldName);
-            
-            % Add columns for this mouse
-            dayZTCountsTable.([mouseID '_Counts']) = mouseZTData.counts(d, :)';
-            dayZTTotalDurTable.([mouseID '_Total']) = mouseZTData.totalDurations(d, :)';
-            
-            fprintf('    Added ZT data for mouse %s\n', mouseID);
-        else
-            % Add zero columns if mouse has no ZT data
-            zeroData = zeros(numZTHours, 1);
-            dayZTCountsTable.([mouseID '_Counts']) = zeroData;
-            dayZTTotalDurTable.([mouseID '_Total']) = zeroData;
-        end
-    end
-    
-    % Add genotype statistics for this day
-    for genotype = {'wild_type', 'mutant'}
-        gen = genotype{1};
-        display_name = strrep(gen, '_', '-');
-        
-        if isfield(ztStatsByDay, gen) && isfield(ztStatsByDay.(gen), dayKey)
-            dayStats = ztStatsByDay.(gen).(dayKey);
-            
-            % Add counts statistics
-            dayZTCountsTable.([display_name '_Mean']) = dayStats.counts.mean';
-            dayZTCountsTable.([display_name '_SD']) = dayStats.counts.std';
-            dayZTCountsTable.([display_name '_SEM']) = dayStats.counts.sem';
-            
-            % Add total durations statistics
-            dayZTTotalDurTable.([display_name '_Mean']) = dayStats.totalDurations.mean';
-            dayZTTotalDurTable.([display_name '_SD']) = dayStats.totalDurations.std';
-            dayZTTotalDurTable.([display_name '_SEM']) = dayStats.totalDurations.sem';
-        end
-    end
-    
-    % Write day ZT tables to Excel
-    sheetNameCounts = sprintf('ZT_Day_%d_Counts', d);
-    sheetNameTotalDur = sprintf('ZT_Day_%d_Total_Dur', d);
-    
-    try
-        writetable(dayZTCountsTable, xlsFilePath, 'Sheet', sheetNameCounts);
-        writetable(dayZTTotalDurTable, xlsFilePath, 'Sheet', sheetNameTotalDur);
-        
-        fprintf('  Added ZT sheets for Day %d: %s, %s\n', d, sheetNameCounts, sheetNameTotalDur);
-    catch writeErr
-        fprintf('  Warning: Could not write ZT Day %d data: %s\n', d, writeErr.message);
-    end
-end
-
-%% Create ZT hour plots
+%% Create ZT hour plots with dynamic genotypes
 fprintf('Generating ZT hour plots...\n');
 
 % Define plot types
 ztPlotTypes = {'counts', 'totalDurations', 'avgDurations'};
 ztPlotLabels = {'Sleep Bout Counts', 'Total Sleep Duration', 'Average Bout Duration'};
 ztYLabels = {'Number of Bouts', 'Total Duration (seconds)', 'Average Duration (seconds)'};
+
+% Define colors for each day (for later plots)
+dayColors = colormap(lines(numDays));
 
 % Create plots for each ZT data type
 for p = 1:length(ztPlotTypes)
@@ -1395,34 +1043,26 @@ for p = 1:length(ztPlotTypes)
     plotHandles = [];
     legendTexts = {};
     
-    % Plot individual data points for wild-type
-    if isfield(ztData, 'wild_type') && ~isempty(ztData.wild_type.(plotType))
-        for i = 1:size(ztData.wild_type.(plotType), 1)
-            scatter(0:23, ztData.wild_type.(plotType)(i,:), 50, wtColor, 'o', 'filled', 'MarkerFaceAlpha', 0.3);
+    % Plot data for each genotype
+    for i = 1:numGenotypes
+        genField = genotypeFieldNames{i};
+        genotypeName = genotypeNames{i};
+        color = genotypeColors(i, :);
+        
+        % Plot individual data points
+        if isfield(ztData, genField) && ~isempty(ztData.(genField).(plotType))
+            for j = 1:size(ztData.(genField).(plotType), 1)
+                scatter((0:23) + (i-1)*0.1, ztData.(genField).(plotType)(j,:), 50, color, 'o', 'filled', 'MarkerFaceAlpha', 0.3);
+            end
+            
+            % Plot mean with error bars and capture handle
+            h = errorbar((0:23) + (i-1)*0.1, ztMean.(genField).(plotType), ztSem.(genField).(plotType), ...
+                'Color', color, 'LineWidth', 2, 'Marker', 'o', 'MarkerFaceColor', color, 'MarkerSize', 10);
+            
+            % Add to legend arrays
+            plotHandles = [plotHandles, h];
+            legendTexts{end+1} = sprintf('%s (Mean ± SEM)', genotypeName);
         end
-        
-        % Plot mean with error bars and capture handle
-        h_wt = errorbar(0:23, ztMean.wild_type.(plotType), ztSem.wild_type.(plotType), ...
-            'Color', wtColor, 'LineWidth', 2, 'Marker', 'o', 'MarkerFaceColor', wtColor, 'MarkerSize', 10);
-        
-        % Add to legend arrays
-        plotHandles = [plotHandles, h_wt];
-        legendTexts{end+1} = 'Wild-type (Mean ± SEM)';
-    end
-    
-    % Plot individual data points for mutant
-    if isfield(ztData, 'mutant') && ~isempty(ztData.mutant.(plotType))
-        for i = 1:size(ztData.mutant.(plotType), 1)
-            scatter((0:23)+0.2, ztData.mutant.(plotType)(i,:), 50, mutColor, 'o', 'filled', 'MarkerFaceAlpha', 0.3);
-        end
-        
-        % Plot mean with error bars and capture handle
-        h_mut = errorbar((0:23)+0.2, ztMean.mutant.(plotType), ztSem.mutant.(plotType), ...
-            'Color', mutColor, 'LineWidth', 2, 'Marker', 'o', 'MarkerFaceColor', mutColor, 'MarkerSize', 10);
-        
-        % Add to legend arrays
-        plotHandles = [plotHandles, h_mut];
-        legendTexts{end+1} = 'Mutant (Mean ± SEM)';
     end
     
     % Bring the lines to front
@@ -1449,305 +1089,9 @@ end
 
 fprintf('ZT hour analysis complete!\n');
 
-%% Create ZT plots across experimental days
-fprintf('Creating ZT bout counts across experimental days plots...\n');
-
-% Define colors for each day
-dayColors = colormap(lines(numDays)); % Generates distinct colors for each day
-
-% 1. ZT bout counts across days by genotype
-for genotype = {'wild_type', 'mutant'}
-    gen = genotype{1};
-    display_name = strrep(gen, '_', '-');
-    
-    figure('Name', ['ZT Bout Counts Across Days - ' display_name], 'Position', [100, 100, 1200, 800]);
-    hold on;
-    
-    % Add light/dark background shading
-    lightPhaseColor = [0.9, 0.9, 0.8];
-    darkPhaseColor = [0.8, 0.8, 0.9];
-    
-    % Set axis limits and draw background
-    xlim([-0.5, 23.5]);
-    ylim auto;
-    yl = ylim;
-    
-    rectangle('Position', [0, yl(1), 12, yl(2)-yl(1)], ...
-        'FaceColor', lightPhaseColor, 'EdgeColor', 'none');
-    rectangle('Position', [12, yl(1), 12, yl(2)-yl(1)], ...
-        'FaceColor', darkPhaseColor, 'EdgeColor', 'none');
-    
-    % Plot data for each day
-    plotHandles = [];
-    legendTexts = {};
-    
-    for d = 1:numDays
-        dayKey = sprintf('day%d', d);
-        
-        if isfield(ztStatsByDay, gen) && isfield(ztStatsByDay.(gen), dayKey) && ...
-           ~isempty(ztStatsByDay.(gen).(dayKey).counts.mean)
-            
-            meanData = ztStatsByDay.(gen).(dayKey).counts.mean;
-            semData = ztStatsByDay.(gen).(dayKey).counts.sem;
-            
-            h = errorbar(0:23, meanData, semData, ...
-                'Color', dayColors(d, :), 'LineWidth', 2, 'Marker', 'o', ...
-                'MarkerFaceColor', dayColors(d, :), 'MarkerSize', 6);
-            
-            plotHandles = [plotHandles, h];
-            legendTexts{end+1} = sprintf('Day %d', d);
-        end
-    end
-    
-    % Bring plot lines to front
-    uistack(findobj(gca, 'Type', 'line'), 'top');
-    
-    title(['ZT Bout Counts Across Days - ' display_name ' Mice']);
-    xlabel('ZT Hour (ZT0 = 6:00, ZT12 = 18:00)');
-    ylabel('Number of Sleep Bouts (Mean ± SEM)');
-    set(gca, 'XTick', 0:2:23);
-    
-    if ~isempty(plotHandles)
-        legend(plotHandles, legendTexts, 'Location', 'best');
-    end
-    
-    grid on;
-    hold off;
-    
-    % Save figure
-    saveas(gcf, fullfile(outputFolder, ['ZT_Counts_Across_Days_' display_name '.fig']));
-    saveas(gcf, fullfile(outputFolder, ['ZT_Counts_Across_Days_' display_name '.png']));
-end
-
-% 2. Comparison plot: Wild-type vs Mutant for each day
-for d = 1:numDays
-    dayKey = sprintf('day%d', d);
-    dayDate = datestr(allDays(d), 'yyyy-mm-dd');
-    
-    figure('Name', ['ZT Bout Counts Day ' num2str(d) ' - Genotype Comparison'], 'Position', [100, 100, 1000, 600]);
-    hold on;
-    
-    % Add light/dark background shading
-    lightPhaseColor = [0.9, 0.9, 0.8];
-    darkPhaseColor = [0.8, 0.8, 0.9];
-    
-    xlim([-0.5, 23.5]);
-    ylim auto;
-    yl = ylim;
-    
-    rectangle('Position', [0, yl(1), 12, yl(2)-yl(1)], ...
-        'FaceColor', lightPhaseColor, 'EdgeColor', 'none');
-    rectangle('Position', [12, yl(1), 12, yl(2)-yl(1)], ...
-        'FaceColor', darkPhaseColor, 'EdgeColor', 'none');
-    
-    % Plot both genotypes
-    plotHandles = [];
-    legendTexts = {};
-    
-    for genotype = {'wild_type', 'mutant'}
-        gen = genotype{1};
-        display_name = strrep(gen, '_', '-');
-        
-        if strcmp(gen, 'wild_type')
-            color = wtColor;
-        else
-            color = mutColor;
-        end
-        
-        if isfield(ztStatsByDay, gen) && isfield(ztStatsByDay.(gen), dayKey) && ...
-           ~isempty(ztStatsByDay.(gen).(dayKey).counts.mean)
-            
-            meanData = ztStatsByDay.(gen).(dayKey).counts.mean;
-            semData = ztStatsByDay.(gen).(dayKey).counts.sem;
-            
-            h = errorbar(0:23, meanData, semData, ...
-                'Color', color, 'LineWidth', 2, 'Marker', 'o', ...
-                'MarkerFaceColor', color, 'MarkerSize', 8);
-            
-            plotHandles = [plotHandles, h];
-            legendTexts{end+1} = [display_name ' (Mean ± SEM)'];
-        end
-    end
-    
-    % Bring plot lines to front
-    uistack(findobj(gca, 'Type', 'line'), 'top');
-    
-    title(['ZT Bout Counts - Day ' num2str(d) ' (' dayDate ') - Genotype Comparison']);
-    xlabel('ZT Hour (ZT0 = 6:00, ZT12 = 18:00)');
-    ylabel('Number of Sleep Bouts (Mean ± SEM)');
-    set(gca, 'XTick', 0:2:23);
-    
-    if ~isempty(plotHandles)
-        legend(plotHandles, legendTexts, 'Location', 'best');
-    end
-    
-    grid on;
-    hold off;
-    
-    % Save figure
-    saveas(gcf, fullfile(outputFolder, ['ZT_Counts_Day_' num2str(d) '_Genotype_Comparison.fig']));
-    saveas(gcf, fullfile(outputFolder, ['ZT_Counts_Day_' num2str(d) '_Genotype_Comparison.png']));
-end
-
-% 3. Individual mouse ZT patterns across days (create subplots for each mouse)
-allMouseIDs_plot = {};
-if isfield(animalIDs, 'wild_type')
-    allMouseIDs_plot = [allMouseIDs_plot, animalIDs.wild_type];
-end
-if isfield(animalIDs, 'mutant')
-    allMouseIDs_plot = [allMouseIDs_plot, animalIDs.mutant];
-end
-
-% Create individual mouse plots (4 mice per figure)
-micePerFig = 4;
-numFigs = ceil(length(allMouseIDs_plot) / micePerFig);
-
-for figIdx = 1:numFigs
-    figure('Name', ['Individual Mouse ZT Patterns Across Days - Set ' num2str(figIdx)], 'Position', [100, 100, 1400, 1000]);
-    
-    startIdx = (figIdx - 1) * micePerFig + 1;
-    endIdx = min(figIdx * micePerFig, length(allMouseIDs_plot));
-    
-    for plotIdx = 1:(endIdx - startIdx + 1)
-        mouseIdx = startIdx + plotIdx - 1;
-        mouseID = allMouseIDs_plot{mouseIdx};
-        mouseFieldName = makeValidFieldName(mouseID);
-        
-        % Find which genotype this mouse belongs to
-        if isfield(animalIDs, 'wild_type') && any(strcmp(animalIDs.wild_type, mouseID))
-            gen = 'wild_type';
-            mouseColor = wtColor;
-        elseif isfield(animalIDs, 'mutant') && any(strcmp(animalIDs.mutant, mouseID))
-            gen = 'mutant';
-            mouseColor = mutColor;
-        else
-            continue;
-        end
-        
-        subplot(2, 2, plotIdx);
-        hold on;
-        
-        % Add light/dark background shading
-        lightPhaseColor = [0.9, 0.9, 0.8];
-        darkPhaseColor = [0.8, 0.8, 0.9];
-        
-        xlim([-0.5, 23.5]);
-        ylim auto;
-        yl = ylim;
-        
-        rectangle('Position', [0, yl(1), 12, yl(2)-yl(1)], ...
-            'FaceColor', lightPhaseColor, 'EdgeColor', 'none');
-        rectangle('Position', [12, yl(1), 12, yl(2)-yl(1)], ...
-            'FaceColor', darkPhaseColor, 'EdgeColor', 'none');
-        
-        % Plot this mouse's data across days
-        if isfield(ztDataByDay, gen) && isfield(ztDataByDay.(gen), mouseFieldName)
-            mouseZTData = ztDataByDay.(gen).(mouseFieldName);
-            
-            for d = 1:numDays
-                plot(0:23, mouseZTData.counts(d, :), ...
-                    'Color', dayColors(d, :), 'LineWidth', 1.5, 'Marker', 'o', ...
-                    'MarkerFaceColor', dayColors(d, :), 'MarkerSize', 4);
-            end
-        end
-        
-        % Bring plot lines to front
-        uistack(findobj(gca, 'Type', 'line'), 'top');
-        
-        title(['Mouse ' mouseID ' (' strrep(gen, '_', '-') ')']);
-        xlabel('ZT Hour');
-        ylabel('Sleep Bout Counts');
-        set(gca, 'XTick', 0:4:23);
-        grid on;
-        hold off;
-        
-        % Add legend only to first subplot
-        if plotIdx == 1
-            legendTexts_mouse = {};
-            for d = 1:numDays
-                legendTexts_mouse{end+1} = sprintf('Day %d', d);
-            end
-            legend(legendTexts_mouse, 'Location', 'best', 'FontSize', 8);
-        end
-    end
-    
-    % Save figure
-    saveas(gcf, fullfile(outputFolder, ['Individual_Mouse_ZT_Patterns_Set_' num2str(figIdx) '.fig']));
-    saveas(gcf, fullfile(outputFolder, ['Individual_Mouse_ZT_Patterns_Set_' num2str(figIdx) '.png']));
-end
-
-fprintf('ZT across days analysis complete!\n');
-
-%% Create ZT plots across experimental days
-fprintf('Creating ZT bout counts across experimental days plots...\n');
-
-% 1. ZT bout counts across days by genotype
-for genotype = {'wild_type', 'mutant'}
-    gen = genotype{1};
-    display_name = strrep(gen, '_', '-');
-    
-    figure('Name', ['ZT Bout Counts Across Days - ' display_name], 'Position', [100, 100, 1200, 800]);
-    hold on;
-    
-    % Add light/dark background shading
-    lightPhaseColor = [0.9, 0.9, 0.8];
-    darkPhaseColor = [0.8, 0.8, 0.9];
-    
-    % Set axis limits and draw background
-    xlim([-0.5, 23.5]);
-    ylim auto;
-    yl = ylim;
-    
-    rectangle('Position', [0, yl(1), 12, yl(2)-yl(1)], ...
-        'FaceColor', lightPhaseColor, 'EdgeColor', 'none');
-    rectangle('Position', [12, yl(1), 12, yl(2)-yl(1)], ...
-        'FaceColor', darkPhaseColor, 'EdgeColor', 'none');
-    
-    % Plot data for each day
-    plotHandles = [];
-    legendTexts = {};
-    
-    for d = 1:numDays
-        dayKey = sprintf('day%d', d);
-        
-        if isfield(ztStatsByDay, gen) && isfield(ztStatsByDay.(gen), dayKey) && ...
-           ~isempty(ztStatsByDay.(gen).(dayKey).counts.mean)
-            
-            meanData = ztStatsByDay.(gen).(dayKey).counts.mean;
-            semData = ztStatsByDay.(gen).(dayKey).counts.sem;
-            
-            h = errorbar(0:23, meanData, semData, ...
-                'Color', dayColors(d, :), 'LineWidth', 2, 'Marker', 'o', ...
-                'MarkerFaceColor', dayColors(d, :), 'MarkerSize', 6);
-            
-            plotHandles = [plotHandles, h];
-            legendTexts{end+1} = sprintf('Day %d', d);
-        end
-    end
-    
-    % Bring plot lines to front
-    uistack(findobj(gca, 'Type', 'line'), 'top');
-    
-    title(['ZT Bout Counts Across Days - ' display_name ' Mice']);
-    xlabel('ZT Hour (ZT0 = 6:00, ZT12 = 18:00)');
-    ylabel('Number of Sleep Bouts (Mean ± SEM)');
-    set(gca, 'XTick', 0:2:23);
-    
-    if ~isempty(plotHandles)
-        legend(plotHandles, legendTexts, 'Location', 'best');
-    end
-    
-    grid on;
-    hold off;
-    
-    % Save figure
-    saveas(gcf, fullfile(outputFolder, ['ZT_Counts_Across_Days_' display_name '.fig']));
-    saveas(gcf, fullfile(outputFolder, ['ZT_Counts_Across_Days_' display_name '.png']));
-end
-
 % Restore normal figure visibility
 set(0, 'DefaultFigureVisible', 'on');
 
-fprintf('ZT across days analysis complete!\n');
+fprintf('ZT analysis complete!\n');
 fprintf('All figures saved to %s\n', outputFolder);
 fprintf('Analysis complete!\n');
