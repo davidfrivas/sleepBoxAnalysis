@@ -22,8 +22,25 @@ function validName = makeValidFieldName(inputName)
     validName = regexprep(validName, '[^a-zA-Z0-9_]', '_');
 end
 
+%% Helper function to create safe filenames
+function safeName = makeSafeFileName(inputName)
+    % Replace problematic characters for filenames
+    safeName = inputName;
+    safeName = strrep(safeName, '/', '_');
+    safeName = strrep(safeName, '\', '_');
+    safeName = strrep(safeName, ':', '_');
+    safeName = strrep(safeName, '*', '_');
+    safeName = strrep(safeName, '?', '_');
+    safeName = strrep(safeName, '"', '_');
+    safeName = strrep(safeName, '<', '_');
+    safeName = strrep(safeName, '>', '_');
+    safeName = strrep(safeName, '|', '_');
+    safeName = strrep(safeName, ' ', '_');
+    safeName = strrep(safeName, '-', '_');
+end
+
 %% Parameters and Setup
-mainFolder = '/Users/davidrivas/Documents/research/sleep-box/Chd8Het_Old_July2023/091823'; % Use current directory, or specify your path
+mainFolder = '/Users/davidrivas/Documents/research/sleep-box/Chd8Flox_CohortK_CMVCre_052025'; % Use current directory, or specify your path
 
 % Define bin edges for epoch durations (in seconds)
 binEdges = [2, 4, 8, 16, 32, 64, 128, 256, 512, inf];
@@ -807,9 +824,10 @@ for c = 1:length(categories)
     grid on;
     hold off;
     
-    % Save the figure
-    saveas(gcf, fullfile(outputFolder, [strrep(categoryLabel, ' ', '_') '_Bouts_Dot.fig']));
-    saveas(gcf, fullfile(outputFolder, [strrep(categoryLabel, ' ', '_') '_Bouts_Dot.png']));
+    % Save the figure - use safe filename
+    safe_category_name = makeSafeFileName(categoryLabel);
+    saveas(gcf, fullfile(outputFolder, [safe_category_name '_Bouts_Dot.fig']));
+    saveas(gcf, fullfile(outputFolder, [safe_category_name '_Bouts_Dot.png']));
 end
 
 fprintf('All figures saved to %s\n', outputFolder);
@@ -931,9 +949,10 @@ for p = 1:length(phases)
     grid on;
     hold off;
     
-    % Save figure
-    saveas(gcf, fullfile(outputFolder, [strrep(phaseLabel, ' ', '_') '_Sleep_Bout_Counts_Across_Days.fig']));
-    saveas(gcf, fullfile(outputFolder, [strrep(phaseLabel, ' ', '_') '_Sleep_Bout_Counts_Across_Days.png']));
+    % Save figure - use safe filename
+    safe_phase_name = makeSafeFileName(phaseLabel);
+    saveas(gcf, fullfile(outputFolder, [safe_phase_name '_Sleep_Bout_Counts_Across_Days.fig']));
+    saveas(gcf, fullfile(outputFolder, [safe_phase_name '_Sleep_Bout_Counts_Across_Days.png']));
 end
 
 fprintf('Per-day analysis complete!\n');
@@ -1483,9 +1502,10 @@ for p = 1:length(ztPlotTypes)
     grid on;
     hold off;
     
-    % Save the figure
-    saveas(gcf, fullfile(outputFolder, ['ZT_' strrep(plotLabel, ' ', '_') '_Dot.fig']));
-    saveas(gcf, fullfile(outputFolder, ['ZT_' strrep(plotLabel, ' ', '_') '_Dot.png']));
+    % Save the figure - use safe filename
+    safe_plot_name = makeSafeFileName(plotLabel);
+    saveas(gcf, fullfile(outputFolder, ['ZT_' safe_plot_name '_Dot.fig']));
+    saveas(gcf, fullfile(outputFolder, ['ZT_' safe_plot_name '_Dot.png']));
 end
 
 fprintf('ZT hour analysis complete!\n');
@@ -1567,9 +1587,10 @@ for i = 1:numGenotypes
     grid on;
     hold off;
     
-    % Save figure
-    saveas(gcf, fullfile(outputFolder, ['ZT_Counts_Across_Days_' strrep(display_name, '-', '_') '.fig']));
-    saveas(gcf, fullfile(outputFolder, ['ZT_Counts_Across_Days_' strrep(display_name, '-', '_') '.png']));
+    % Save figure - use safe filename
+    safe_genotype_name = makeSafeFileName(display_name);
+    saveas(gcf, fullfile(outputFolder, ['ZT_Counts_Across_Days_' safe_genotype_name '.fig']));
+    saveas(gcf, fullfile(outputFolder, ['ZT_Counts_Across_Days_' safe_genotype_name '.png']));
 end
 
 % 2. Comparison plot: Wild-type vs Mutant for each day
